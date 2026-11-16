@@ -1,0 +1,21 @@
+[package]
+name = "date-core"
+version = "1.0.0"
+edition = "2021"
+description = "Pure, deterministic date calculation engine for Date Calculator Tool."
+authors = ["Mohamed Sayed", "Ahmed Emara", "Claude"]
+license = "UNLICENSED"
+publish = false
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["std"] }
+
+# Run the bridge's framing tests under `cargo test` (examples are only
+# built, not tested, by default).
+[[example]]
+name = "eval_bridge"
+test = true
