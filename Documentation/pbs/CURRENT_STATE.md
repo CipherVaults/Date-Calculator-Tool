@@ -3,7 +3,7 @@
 ## 🪪 Present-state identity
 
 - Record type: accepted present and active authority pointer (PBS v1.1).
-- Canonical project home: local repository `D:\Claude Projects\Date Calculator` (branch `dev`). Planned public home: `CipherVaults/Date-Calculator-Tool` (not created yet). Repository entry: [AGENTS.md](../../AGENTS.md).
+- Canonical project home: [CipherVaults/Date-Calculator-Tool](https://github.com/CipherVaults/Date-Calculator-Tool) (public, created 2026-11-16; only `dev` exists, which GitHub shows as the default branch until `main` is created at the PR step). Local working copy: `D:Claude ProjectsDate Calculator`. Repository entry: [AGENTS.md](../../AGENTS.md).
 - Chosen granularity: combined small-project checkpoint. [Continuation](CONTINUATION_STATE.md) owns unfinished milestone work; the [Execution & Coding Ledger](EXECUTION_AND_CODING_LEDGER.md) owns detailed execution evidence.
 - State owner: coordinating maintainer (Claude Code, Opus 5.5); the project owner (Ahmed) decides acceptance.
 - As of: **2026-11-16**, Goal approved; M0 (scaffold) in progress.

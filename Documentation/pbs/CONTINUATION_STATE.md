@@ -14,7 +14,9 @@
 |---|---|---|---|
 | R0 | M0 scaffold, specs, icons, PBS records | implemented-verified | Ledger E-02–E-04; committed on `dev` |
 | R1–R3 | M1–M3 date-core | implemented-verified | Ledger E-05, E-06; committed on `dev` |
-| R4–R9 | M4–M9 | not started | — |
+| R4–R7 | M4–M7 apps | in progress | Workflow `wf_05af85e7-2c1` (relaunched after the previous session ended with no agent finished) |
+| R8 | M8 repo | partial | Repo created and `dev` pushed early on owner request (E-07); CI, docs and PR pending |
+| R9 | M9 release | not started | Needs owner yes to merge to `main` |
 
 ## ▶️ Exact next permitted action
 
