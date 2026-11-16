@@ -23,6 +23,26 @@ This file holds the project's persistent execution instructions for AI and human
 - **Version** must match in `tauri.conf.json`, both `Cargo.toml` files, mobile `APP_VERSION`, the `sw.js` cache name and the footers.
 - **Windows.** Run Cargo/Tauri from **PowerShell**, never Git Bash: Git Bash's `/usr/bin/link` shadows the MSVC linker. Node and gh are fine in either shell.
 
+## 🌿 Git & GitHub rhythm
+
+Commits follow the owner's *Git & GitHub Rhythm* (Claude skill `git-github-rhythm`).
+
+- **Remote:** public `CipherVaults/Date-Calculator-Tool`. Work happens on `dev`. `main` is reached only by PR from `dev`.
+- **Who does what:**
+  - The coordinating maintainer integrates, commits and pushes `dev`. Parallel agents edit files but do not commit.
+  - Merging to `main`, tags and releases need the owner's explicit yes.
+- **One coherent step per commit.** Stage explicit paths, never a blanket `git add -A` while other agents are editing. Read the staged diff before committing.
+- **Message format:**
+  - A plain-language subject.
+  - A bullet body with `Why / Changed / Checks / Remaining`. `Checks` names the real commands and results, and says what was not run.
+  - Unfinished work is preserved as `WIP:`.
+  - Every commit ends with the required `Co-Authored-By:` trailer.
+- **Push and verify:**
+  - Push after each verified milestone and before a session ends.
+  - Verify with `git ls-remote origin dev` against `git rev-parse HEAD`.
+  - Never force-push.
+- **Receipts** (published SHA, checks, not covered) go in the closing report and, for milestones, in the [Execution & Coding Ledger](Documentation/pbs/EXECUTION_AND_CODING_LEDGER.md).
+
 ## 🔐 Permission checks
 
 - Private per-device state must not be read, cleared or exported without owner authority: `%APPDATA%\com.datecalculator.tool\{history,settings}.json`, browser `localStorage` and PWA caches.
