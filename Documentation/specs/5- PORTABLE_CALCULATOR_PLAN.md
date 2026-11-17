@@ -402,6 +402,51 @@ scripts/         build-web.mjs, check-web.mjs, check-wasm.mjs, browser-boot.mjs,
   - Esc C, Del CE, Backspace, F9 ±, R 1/x, @ √, Ctrl+M/P/Q/R/L memory;
   - F5–F8 HEX/DEC/OCT/BIN.
 
+### B5a. Mini Calculator (pop-up windows and the keyboard Calculator key)
+*Added 2026-11-17 at the owner's request, modelled on what the Windows Calculator key opens.*
+
+**What it is.** A small, fast **Standard-only** calculator window, separate from the full app (Date, Percentage, Scientific, Graphing, Programmer and Converters are not loaded). The layout follows the Windows Calculator's compact Standard view in our dark-terminal design:
+- display;
+- MC MR M+ M− MS;
+- % CE C ⌫;
+- ¹⁄ₓ x² √x ÷;
+- the digit pad;
+- ± 0 . =
+
+It also has a **Keep on top** toggle, a **History | Memory** flyout, and an **Open full app** button.
+
+**Many windows, one history**
+- Any number of Mini windows can be open at once. Each keeps its own display, pending operation and memory.
+- **History is shared** with every other Mini window and with the full app. It is never cleared by closing a window.
+- Every `=` is written through the single backend history store (B10). That store broadcasts a `history-changed` event to all windows.
+- **Desktop: one process** via `tauri-plugin-single-instance` (an owner-approved dependency):
+  - a second launch (`--mini` or plain) forwards its arguments to the running process, which opens a new window;
+  - there are never two processes writing `history.json`.
+- Windows are `WebviewWindow`s labelled `mini-<n>`, about 320×500 by default, resizable. The next window opens at the last window's remembered position.
+- `capabilities/default.json` covers `["main","mini-*"]` with `permissions: []`. The CSP is unchanged.
+
+**Launch paths**
+- `PortableCalculator.exe --mini` opens a Mini window only, with no full-app window, so the key press feels instant.
+- From the full app: a "Mini calculator" button in the Standard header (the ⧉ icon, as in Windows) and the shortcut **Ctrl+Shift+M**.
+- **Keyboard Calculator key** (Settings → *Keyboard Calculator key*, Windows only, **off by default**):
+  - **On** writes the per-user registry value `HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\AppKey\18\ShellExecute` = `"<current exe path>" --mini`. No admin is needed. AppKey 18 is the Calculator key; Windows reads it on each press.
+  - **Off** deletes only that value, and only if it still points to a Portable Calculator exe. Windows then falls back to its built-in Calculator association. We never touch HKLM or other AppKeys.
+  - The Settings row shows the current state, read back from the registry: "On: opens Portable Calculator", "Off: opens Windows Calculator", or "Set by another app". The last state is never overwritten without a confirm.
+  - At startup, if the toggle is on and the stored path is a Portable Calculator exe at a different location (the portable exe moved), the value is re-pointed to the current exe.
+  - **Uninstall cleanup:** an NSIS `NSIS_HOOK_PREUNINSTALL` hook and a WiX fragment (`RemoveRegistryValue` on uninstall) delete the value if it points to this app. That way the key never points to a missing exe.
+  - Registry access lives only in the native store crate (`pcalc-store`, Windows-only module). Paths are fixed; the only input is the app's own exe path. Tests run against a temporary HKCU subkey.
+- **Web / PWA:** the key cannot be bound from a browser.
+  - On desktop browsers, a "Pop out" button opens the Mini route (`#/mini`) in a compact window. Where the **Document Picture-in-Picture** API exists (Chromium 116+), it opens as an always-on-top PiP window. In both cases history is shared through IndexedDB and `BroadcastChannel("pcalc")`.
+  - **On phones, Mini is simply the Standard calculator** (full screen, one-handed); no pop-out.
+
+**Engine and state.** Mini uses the same `calc.press` key machine (B6) and records history exactly as Standard does (`tool:"standard"`), so its entries restore into Standard in the full app and into any Mini window.
+
+**Tests**
+- Desktop smoke: open two Mini windows, press keys in each, assert one shared history with both entries and no second process.
+- The AppKey toggle round-trips on a temp subkey.
+- safety-eval: the Mini route renders with only the Standard bundle; `history-changed` sync across two simulated windows.
+- browser-boot: the `#/mini` route boots.
+
 ### B6. Numeric model
 **`calc-num::Dec`**
 - Sign, base-10⁹ `u32` limbs, |exponent| ≤ 9999, otherwise `overflow`.
@@ -681,6 +726,7 @@ The clipboard export and the paste import are verified on an iOS home-screen ins
 | M4 | legacy importers, consent-first card | cross-source fixtures idempotent; old files unchanged | — |
 | M5a | `calc-num` + oracle | oracle suite, no-panic fuzz | — |
 | M5b | Standard key machine, memory, `%` semantics | key goldens; record→eval round trip | — |
+| M5b+ | **Mini Calculator** (B5a): multi-window, single instance, shared history, Keep on top, web pop-out/PiP, the keyboard Calculator key setting and uninstall cleanup | smoke with two Mini windows sharing history; AppKey toggle tests; the key press opens Mini on the owner's keyboard (manual) | the `tauri-plugin-single-instance` dependency (covered by plan approval) |
 | M5c | Scientific | oracle + key goldens | — |
 | M6 | Programmer | BigInt oracle, hand vectors; bit keypad accessible | — |
 | M7 | converters (12) | NIST vectors and round trips | — |
