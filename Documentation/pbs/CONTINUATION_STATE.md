@@ -5,7 +5,8 @@
 - Record type: recoverable working checkpoint (PBS v1.1).
 - Goal: build Date Calculator Tool v1.0.0 per the approved Plan (milestones M0–M9; see [Roadmap](../3-%20ROADMAP.md)).
 - Recorded at: 2026-11-17 · writer: Claude Code (Opus 5.5) · next integrating owner: same session / any successor executor.
-- Mission state: **M0–M9 done. PR #1 CI green on Ubuntu + Windows after the checksum fix `9c06553` (E-12); merged to `main` as `5a512a3`; Release v1.0.0 published and Pages live 2026-11-17 (E-13). Waiting on owner checks and owner acceptance.**
+- Mission state (2026-11-17, newer): **Approved Portable Calculator Plan, Part A (Date v1.1.0) in progress on `dev`**. See [the plan](../specs/5-%20PORTABLE_CALCULATOR_PLAN.md) and the v1.1.0 milestones in the Roadmap.
+- Previous mission state: **M0–M9 done. PR #1 CI green on Ubuntu + Windows after the checksum fix `9c06553` (E-12); merged to `main` as `5a512a3`; Release v1.0.0 published and Pages live 2026-11-17 (E-13). Waiting on owner checks and owner acceptance.**
 - Latest authorization: [Current State — Current authority](CURRENT_STATE.md#-current-authority).
 
 ## 🔎 Recovery inventory
