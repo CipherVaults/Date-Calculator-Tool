@@ -5,7 +5,7 @@
 - Record type: recoverable working checkpoint (PBS v1.1).
 - Goal: build Date Calculator Tool v1.0.0 per the approved Plan (milestones M0–M9; see [Roadmap](../3-%20ROADMAP.md)).
 - Recorded at: 2026-11-17 · writer: Claude Code (Opus 5.5) · next integrating owner: same session / any successor executor.
-- Mission state: **M0–M7 verified and pushed (`3b731e8`); M8 (CI, docs, PR) next.**
+- Mission state: **M0–M7 verified; M8 CI, docs and previews written and checked locally (E-10); PR `dev` → `main` and its first CI run in progress.**
 - Latest authorization: [Current State — Current authority](CURRENT_STATE.md#-current-authority).
 
 ## 🔎 Recovery inventory
@@ -18,12 +18,12 @@
 | R5 | M5 desktop UI | implemented-verified | Ledger E-09; commit `a2d5657`. Open owner check: leaving the Egypt preset keeps the weekend unchanged |
 | R6 | M6 mobile PWA | implemented-verified | Ledger E-09; commit `3a4948b`. Real-phone install not done (owner check) |
 | R7 | M7 safety-eval | implemented-verified | Ledger E-09; commit `3b731e8` |
-| R8 | M8 repo | partial | Repo created and `dev` pushed early on owner request (E-07); CI, docs and PR pending |
+| R8 | M8 CI, docs, PR | implemented-locally-verified | Ledger E-10; workflows not yet run on GitHub — the PR run is the first real test |
 | R9 | M9 release | not started | Needs owner yes to merge to `main` |
 
 ## ▶️ Exact next permitted action
 
-M8: add `.github/workflows/build.yml` and `pages.yml` (adapted from the reference, SHA-pinned, `persist-credentials: false`, `Start-Process -Wait -PassThru` smoke step, `node scripts/check-mobile.mjs` and safety-eval), release notes, Documentation 1/2/4, `HANDOFF.md`, previews; then add workflow-hygiene criteria to safety-eval slice D. Then open a PR `dev` → `main` (create `main` first) and get CI green. Merging stays behind the owner's explicit yes.
+Create `main` from a commit **without** `.github/workflows` (for example `git push origin dc4c05e:refs/heads/main`), never from `dev` HEAD once the workflows are committed, because creating the branch is a push to `main` that would publish the release and deploy Pages. Then open the PR `dev` → `main` (its `pull_request` run cannot release) and get CI green. Before the M9 merge the owner makes `main` the default branch, or adds `main` to the `github-pages` environment's deployment-branch rule. Merging stays behind the owner's explicit yes.
 
 ## 🚫 Do not repeat / known pitfalls
 

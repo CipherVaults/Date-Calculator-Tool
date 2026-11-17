@@ -6,7 +6,7 @@
 - Canonical project home: [CipherVaults/Date-Calculator-Tool](https://github.com/CipherVaults/Date-Calculator-Tool) (public, created 2026-11-16; only `dev` exists, which GitHub shows as the default branch until `main` is created at the PR step). Local working copy: `D:Claude ProjectsDate Calculator`. Repository entry: [AGENTS.md](../../AGENTS.md).
 - Chosen granularity: combined small-project checkpoint. [Continuation](CONTINUATION_STATE.md) owns unfinished milestone work; the [Execution & Coding Ledger](EXECUTION_AND_CODING_LEDGER.md) owns detailed execution evidence.
 - State owner: coordinating maintainer (Claude Code, Opus 5.5); the project owner (Ahmed) decides acceptance.
-- As of: **2026-11-17**: M0–M7 verified and pushed on `dev` (`3b731e8`); M8 next. Nothing released or owner-accepted yet.
+- As of: **2026-11-17**: M0–M7 verified and pushed on `dev`; M8 (CI, docs, previews) committed and locally verified, PR to `main` open. Nothing released or owner-accepted yet.
 
 ## ✅ Accepted present
 
