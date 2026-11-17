@@ -9,6 +9,7 @@ ui/*.css text eol=lf
 ui/*.js text eol=lf
 scripts/*.mjs text eol=lf
 crates/date-core/tests/fixtures/*.json text eol=lf
+.github/workflows/*.yml text eol=lf
 *.png binary
 *.ico binary
 *.icns binary
