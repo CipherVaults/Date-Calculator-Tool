@@ -8,7 +8,7 @@
 | M1 | Civil engine + 6 modes | chrono oracle over all 3.65M days; date-math vectors pass; clippy `-D warnings` clean | done 2026-11-16 |
 | M2 | Calendar/holidays | weekend, US/UK/EG presets, Easter ×2, Hijri, custom/exclusions/overrides, business count/add, month_grid; `holiday_tables.rs` passes | done 2026-11-16 |
 | M3 | api + bridge + golden | `gen_golden --check` clean; parity + safety tests green | done 2026-11-16 |
-| M4 | Tauri backend | settings/history validators, storage, update check + tests; `cargo test --workspace` green | — |
+| M4 | Tauri backend | settings/history validators, storage, update check + tests; `cargo test --workspace` green | done 2026-11-17 |
 | M5 | Desktop UI | 6 cards, mini calendar, settings calendar, history, About; debug and release smoke exit 0; live walkthrough | — |
 | M6 | Mobile PWA | engine mirror, CSP hashes, node golden replay under 3 time zones, offline via `serve-mobile.mjs`, phone-width check | — |
 | M7 | safety-eval | all slices pass; System Card JSON written | — |
