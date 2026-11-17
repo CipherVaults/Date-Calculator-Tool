@@ -10,17 +10,17 @@ This document gives a new collaborator (human or AI) what they need to build, te
 ## 1. Repository & Version Identity
 
 - **Repository:** [`CipherVaults/Date-Calculator-Tool`](https://github.com/CipherVaults/Date-Calculator-Tool), public, UNLICENSED.
-- **Mobile & Web PWA (GitHub Pages, after the first merge to `main`):** `https://ciphervaults.github.io/Date-Calculator-Tool/`
+- **Mobile & Web PWA (GitHub Pages, deployed from `main`, live since 2026-11-17):** `https://ciphervaults.github.io/Date-Calculator-Tool/`
 - **Identity:**
   - product name `Date Calculator Tool`;
   - identifier `com.datecalculator.tool`;
   - Cargo package and binary `date-calculator-tool` (`target\release\date-calculator-tool.exe`);
   - engine crate `date-core`.
-- **Version:** `1.0.0`, not released yet.
+- **Version:** `1.0.0`, released 2026-11-17 as the GitHub Release [`v1.0.0`](https://github.com/CipherVaults/Date-Calculator-Tool/releases/tag/v1.0.0) (tag on merge commit `5a512a3`).
 - **Branches:**
-  - All work happens on `dev`. Only `dev` exists remotely today.
-  - `main` is created at the PR step and is reached only by PR from `dev`.
-  - Create `main` only from a commit that has no `.github/workflows`, such as `dc4c05e`. Never create it from `dev` HEAD once the workflows are committed: creating a branch is a push, and a push to `main` runs the release job and the Pages deploy (section 7).
+  - All work happens on `dev`. `main` is the default branch and is reached only by PR from `dev`.
+  - PR #1 (`dev` → `main`) was merged on 2026-11-17 with the owner's authorization (merge commit `5a512a3`).
+  - Every push to `main` runs the release job and the Pages deploy (section 9G), so each merge needs the owner's explicit yes.
   - Never force-push.
 - **Sibling/reference:** `CipherVaults/Percentage-Calculator-Tool` v2.2.1. Its architecture, hardening, design system and CI are mirrored here deliberately.
 
@@ -112,7 +112,7 @@ Details are in [2- ARCHITECTURE.md](Documentation/2-%20ARCHITECTURE.md).
 | `scripts/serve-mobile.mjs` | Local PWA server at `http://127.0.0.1:8787/Date-Calculator-Tool/` |
 | `scripts/generate-icons.mjs` | Draws the icon PNGs (no dependencies) |
 | `.github/release-notes-v1.0.0.md` | Release notes used by the release job for tag `v1.0.0` |
-| `.github/workflows/` | `build.yml` and `pages.yml` (added in M8; pending first CI run) |
+| `.github/workflows/` | `build.yml` (checks, Windows build, release) and `pages.yml` (Pages deploy); green on PR #1 and on `main` (2026-11-17) |
 | `Documentation/` | Context, architecture, roadmap, session summary, `specs/`, `pbs/` |
 
 ---
@@ -137,7 +137,7 @@ Details are in [2- ARCHITECTURE.md](Documentation/2-%20ARCHITECTURE.md).
    - lock held across the write, memory changed only after it succeeds;
    - a one-time `.bak` / `_bak` for corrupt settings, then defaults with update checks off.
 7. **DOM safety:** only `textContent`, `createElement` and `replaceChildren`. Mobile JS toggles classes and never sets `.style`.
-8. **CI supply chain:** SHA-pinned Actions, `persist-credentials: false` and `--locked`. Only the release job can write. Released tags and assets are immutable.
+8. **CI supply chain:** SHA-pinned Actions, `persist-credentials: false` and `--locked`. In `build.yml` only the release job can write repo contents; `pages.yml` gets `pages: write` and `id-token: write` for the Pages deploy. Released tags and assets are immutable.
 
 ---
 
@@ -148,8 +148,14 @@ Details are in [2- ARCHITECTURE.md](Documentation/2-%20ARCHITECTURE.md).
 | M0 scaffold, M1–M3 engine | done, verified 2026-11-16 (ledger E-02 to E-06) |
 | M4 backend | done, verified 2026-11-17 (E-08) |
 | M5 desktop UI, M6 mobile PWA, M7 safety-eval | done, verified 2026-11-17 (E-09) |
-| M8 CI, docs, PR | in progress; workflows **pending first CI run** |
-| M9 release | owner-gated (merge to `main` needs an explicit yes) |
+| M8 CI, docs, PR | done 2026-11-17: PR #1 with green CI on Ubuntu and Windows (E-12) |
+| M9 release | done 2026-11-17: owner-authorized merge, Release `v1.0.0` with 5 assets, Pages live (E-13). Real-phone PWA install is still an owner check |
+
+Hosted verification (E-12, E-13):
+- PR #1 CI found one real defect: `SHA256SUMS.txt` was written with CRLF, so `sha256sum -c` failed on Linux/macOS. Fixed in `9c06553`; the re-run was green.
+- The Release `v1.0.0` assets were downloaded and checked: `sha256sum -c` OK for all 4 files, `SHA256SUMS.txt` has no CR bytes, and the mobile HTML is byte-identical to `mobile/index.html`.
+- The downloaded portable exe passed `--smoke-test` on the owner's Windows 11 PC (exit code 0, `SMOKE_TEST_OK`; file version 1.0.0).
+- The live Pages files are byte-identical to `mobile/`; the service worker is active and sample Days Between and Age results were shown (see E-13).
 
 Last local verification (E-09):
 - `cargo test --workspace --locked`: all suites (120 tests);
@@ -162,31 +168,32 @@ Last local verification (E-09):
 
 ## 7. Outstanding Tasks & Owner-Side Follow-ups
 
-1. **M8:**
-   - Commit and push the workflows and docs.
-   - Create `main` from a commit **without** `.github/workflows`, for example `git push origin dc4c05e:refs/heads/main`. Never create it from `dev` HEAD (with `git push origin dev:main`, or from `dev` in the GitHub UI) once the workflows are committed. Creating the branch is itself a push to `main`, so it would publish the v1.0.0 Release and deploy Pages without the owner's merge approval.
-   - Then open the PR `dev` → `main`. Its `pull_request` run cannot release.
-   - Get CI green, including the release-exe smoke test on `windows-latest`.
-2. **M9 (owner yes required):** merge to `main`. This publishes the v1.0.0 Release and deploys Pages.
-3. **Owner checks:**
-   - Install the PWA on a real iPhone and Android phone.
-   - Confirm that leaving the Egypt preset should keep the Fri/Sat weekend.
-   - After `main` exists and before the M9 merge: in **Settings → General**, make `main` the default branch (done 2026-11-17), or in **Settings → Environments → `github-pages`** add `main` to the deployment-branch rule. The `github-pages` environment that Pages creates can limit deployments to the default branch, so the first deploy from `main` could otherwise be refused.
-   - Then check in **Settings → Environments → `github-pages`** that it deploys from `main` only, and in **Settings → Pages** that the source is **GitHub Actions**.
+M8 and M9 are done (2026-11-17). What is left:
+
+1. **Docs on `main`:** the post-release doc updates on `dev` (README status and these records) reach `main` only through another PR `dev` → `main`, which needs the owner's explicit yes. A docs-only merge is safe: the release job leaves `v1.0.0` unchanged and Pages redeploys the same `mobile/` bytes.
+2. **Owner checks (not yet verified):**
+   - Install the PWA on a real iPhone and Android phone. So far only "service worker active, manifest served" is verified.
+   - Confirm that leaving the Egypt preset should keep the Fri/Sat weekend (from M5).
+   - Accept v1.0.0. A published release is not owner acceptance.
+   - Optionally check in **Settings → Environments → `github-pages`** that it deploys from `main` only. Pages already reports source `main` with build type "workflow" (GitHub Actions).
+3. **Not run yet:** the NSIS and MSI installers on a clean machine, and a native-window click-through of the desktop UI.
 4. **Backlog** (not authorized, see [3- ROADMAP.md](Documentation/3-%20ROADMAP.md)): more holiday presets, Egyptian decree overrides as data, a light theme.
 
 ---
 
 ## 8. Known Bugs, Caveats & Gotchas
 
-- **No known functional bugs** in the engine, desktop UI or PWA as of E-09.
+- **No known functional bugs** in the engine, desktop UI or PWA as of E-13.
 - **Never run Cargo or Tauri from Git Bash.** Its `/usr/bin/link` shadows the MSVC `link.exe`. Use PowerShell or Windows Terminal. Node and `gh` are fine in either shell.
 - **Editing `<style>` or `<script>` in `mobile/index.html` breaks the CSP until both hashes are recomputed** (section 9D). `check-mobile.mjs` fails until they match.
 - **Line endings:** keep `git config core.autocrlf false` and the `.gitattributes` rules. One stray CR inside `mobile/index.html` changes the hash.
 - **Release builds have no console** (`windows_subsystem = "windows"`), so a bare run shows nothing and PowerShell does not wait for it. CI runs the exe with `Start-Process -Wait -PassThru` and redirected stdout, and gates on both `ExitCode` 0 and `SMOKE_TEST_OK` in that stdout (section 9C).
 - **The smoke test writes to the real Windows clipboard**: the sentinel `date-tool-smoke-test`. History and settings stay in memory and never touch `%APPDATA%`.
 - **PowerShell adds a UTF-8 BOM to piped stdin.** The bridge rejects that first line as `invalid_request`. When piping requests by hand, start with a blank line or use a file.
-- **The update check gets 404 until the first release exists.** The banner stays hidden.
+- **The update check reads `releases/latest`,** which now returns `v1.0.0`. That equals `APP_VERSION`, so no update banner is expected (the banner itself was not separately inspected).
+- **`SHA256SUMS.txt` must stay LF.** PowerShell `Set-Content` writes CRLF, which breaks `sha256sum -c` on Linux/macOS. The stage step writes it with `[System.IO.File]::WriteAllText` and LF, and fails if any CR byte remains.
+- **"Cancelled" CI runs are not failures.** A newer push to a PR cancels the older `pull_request` run (concurrency rule `cancel-in-progress`).
+- **The WebView2 teardown line** "Failed to unregister class Chrome_WidgetWin_0" on stderr after a smoke test is harmless.
 - **Unsigned Windows binaries** trigger SmartScreen; users verify with `SHA256SUMS.txt`. **GitHub Pages cannot send framing headers**, so never put `frame-ancestors` in the meta CSP.
 - **Platform-conditional code:** Unix-only permission code in `commands.rs` lives under `#[cfg(unix)]`. Clippy runs with `-D warnings` on Windows, so do not declare variables that only Unix code uses.
 
@@ -317,6 +324,11 @@ Also:
   - A green push to `main` runs the release job. It publishes `v<version>` with the NSIS, MSI, portable exe, mobile HTML and `SHA256SUMS.txt`, and Pages deploys `mobile/`.
   - Merging to `main`, tags and releases therefore need the owner's explicit yes.
   - Releases are immutable: to publish again, bump the version.
+- **How a future release works:**
+  1. On `dev`, bump the version in every place in section F (`tauri.conf.json`, both `Cargo.toml` files, mobile `APP_VERSION`, the `sw.js` `CACHE_NAME`, the footers and About pills, plus the literals listed under "Also"), and add `.github/release-notes-v<version>.md`.
+  2. Run the section B checks, push `dev`, and open a PR `dev` → `main`. Its `pull_request` run cannot release.
+  3. With CI green and the owner's explicit yes, merge. The release job publishes `v<version>` with the 5 assets, and Pages redeploys `mobile/`.
+  4. If release `v<version>` already exists (for example after a docs-only merge without a bump), the release job prints "preserving immutable tag and assets" and exits 0. It never moves or overwrites an existing tag or its assets.
 
 ---
 

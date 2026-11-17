@@ -63,7 +63,7 @@ scripts/                      check-mobile.mjs, safety-eval.mjs, serve-mobile.mj
                               generate-icons.mjs (Node 20+, no npm packages)
 assets/                       source icons and README previews
 Documentation/                context, architecture, roadmap, session summary, specs/, pbs/
-.github/                      release notes; workflows/ (build.yml, pages.yml; M8)
+.github/                      release notes; workflows/ (build.yml, pages.yml)
 ```
 
 ---
@@ -254,11 +254,11 @@ Adapted from the reference harness. It has no dependencies, is seeded (default s
 
 Every exception counts as a failure, so the tolerance for broken items is 0%. The ledger E-09 run passed 48/48 criteria with 34,631 assertions. With the four M8 workflow criteria, the current local run passes 52/52 criteria with 34,669 assertions.
 
-### 7. Packaging & CI (M8)
+### 7. Packaging & CI (M8–M9)
 
 Packaging is configured in `src-tauri/tauri.conf.json`: NSIS (`installMode: both`) and MSI targets, with the embedded WebView2 bootstrapper. `.gitattributes` forces LF on `mobile/`, `ui/`, `scripts/*.mjs` and the fixtures, because the CSP hashes are byte-exact. `core.autocrlf` is `false`.
 
-The CI workflows are added in M8 as `.github/workflows/build.yml` and `.github/workflows/pages.yml`, adapted from the reference. **Status: pending their first CI run.** As designed (FROZEN §14):
+The CI workflows were added in M8 as `.github/workflows/build.yml` and `.github/workflows/pages.yml`, adapted from the reference. **Status: green on PR #1 and on `main` (2026-11-17); the `main` runs published the `v1.0.0` Release (`build.yml` run 44153914418) and deployed Pages (`pages.yml` run 44153914416)** (ledger E-12, E-13). As designed (FROZEN §14):
 
 1. **Ubuntu checks:**
    - `cargo fmt --check`, clippy `-D warnings`, `cargo test --locked` and `gen_golden --check`;
@@ -268,8 +268,9 @@ The CI workflows are added in M8 as `.github/workflows/build.yml` and `.github/w
    - clippy, workspace tests and safety-eval;
    - `cargo tauri build -- --locked` (Tauri CLI `=2.12.4`);
    - the release-exe smoke test via `Start-Process -Wait -PassThru` with redirected stdout, gated on `ExitCode` 0 and `SMOKE_TEST_OK`;
-   - staging of `Date.Calculator.Tool_<v>_x64-setup.exe`, `Date.Calculator.Tool_<v>_x64_en-US.msi`, `Date.Calculator.Tool.Portable.<v>.exe`, `Date.Calculator.Tool.Mobile.<v>.html` and `SHA256SUMS.txt`.
-3. **Release** (`contents: write`): runs only on a push to `main` or a `v*` tag. It checks that the tag matches the version, never overwrites an existing release, and uses `.github/release-notes-v<version>.md`.
+   - staging of `Date.Calculator.Tool_<v>_x64-setup.exe`, `Date.Calculator.Tool_<v>_x64_en-US.msi`, `Date.Calculator.Tool.Portable.<v>.exe`, `Date.Calculator.Tool.Mobile.<v>.html` and `SHA256SUMS.txt`;
+   - `SHA256SUMS.txt` is written with `[System.IO.File]::WriteAllText` and LF line endings, and the step fails if any CR byte remains. PowerShell `Set-Content` wrote CRLF, which made `sha256sum -c` fail on Linux/macOS; PR #1 CI exposed this and `9c06553` fixed it.
+3. **Release** (`contents: write`): runs only on a push to `main` or a `v*` tag. It checks that the tag matches the version, never overwrites an existing release, and uses `.github/release-notes-v<version>.md`. On a later push to `main` where `v<version>` already exists, it prints "preserving immutable tag and assets" and exits 0; a new release needs a version bump.
 4. **Pages:** deploys `mobile/` from `main` only, after re-running the mobile checks.
 
 All Actions are pinned to 40-character commit SHAs with `persist-credentials: false`. A check keeps the inline node block identical across workflows. Because a green push to `main` publishes the release, merging to `main` needs the owner's explicit yes.
@@ -288,5 +289,5 @@ mobile/                 single-file PWA, service worker, manifest, icons
 scripts/                parity gate, safety evaluation, local PWA server, icon generator
 assets/                 source icons and README previews
 Documentation/          context, architecture, roadmap, session summary, specs/, pbs/
-.github/                release notes; workflows/ (M8)
+.github/                release notes; workflows/ (build.yml, pages.yml)
 ```
