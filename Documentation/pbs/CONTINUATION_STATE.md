@@ -23,7 +23,7 @@
 
 ## ▶️ Exact next permitted action
 
-Create `main` from a commit **without** `.github/workflows` (for example `git push origin dc4c05e:refs/heads/main`), never from `dev` HEAD once the workflows are committed, because creating the branch is a push to `main` that would publish the release and deploy Pages. Then open the PR `dev` → `main` (its `pull_request` run cannot release) and get CI green. Before the M9 merge the owner makes `main` the default branch, or adds `main` to the `github-pages` environment's deployment-branch rule. Merging stays behind the owner's explicit yes.
+Done 2026-11-17: `main` created at `dc4c05e` (no workflows), PR [#1](https://github.com/CipherVaults/Date-Calculator-Tool/pull/1) `dev` → `main` opened, and `main` made the default branch on the owner's yes. Next: get the PR's CI green (Auto-fix watches it). Merging stays behind the owner's explicit yes, because it publishes v1.0.0 and deploys Pages.
 
 ## 🚫 Do not repeat / known pitfalls
 

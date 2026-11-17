@@ -171,7 +171,7 @@ Last local verification (E-09):
 3. **Owner checks:**
    - Install the PWA on a real iPhone and Android phone.
    - Confirm that leaving the Egypt preset should keep the Fri/Sat weekend.
-   - After `main` exists and before the M9 merge: in **Settings → General**, make `main` the default branch (today it is `dev`), or in **Settings → Environments → `github-pages`** add `main` to the deployment-branch rule. The `github-pages` environment that Pages creates can limit deployments to the default branch, so the first deploy from `main` could otherwise be refused.
+   - After `main` exists and before the M9 merge: in **Settings → General**, make `main` the default branch (done 2026-11-17), or in **Settings → Environments → `github-pages`** add `main` to the deployment-branch rule. The `github-pages` environment that Pages creates can limit deployments to the default branch, so the first deploy from `main` could otherwise be refused.
    - Then check in **Settings → Environments → `github-pages`** that it deploys from `main` only, and in **Settings → Pages** that the source is **GitHub Actions**.
 4. **Backlog** (not authorized, see [3- ROADMAP.md](Documentation/3-%20ROADMAP.md)): more holiday presets, Egyptian decree overrides as data, a light theme.
 

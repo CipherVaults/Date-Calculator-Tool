@@ -224,7 +224,7 @@ A Rust engine and its JavaScript copy can only be proven identical when all text
 - Commit the workflows and documentation on `dev`, push, and verify the remote SHA.
 - Create `main` from a commit **without** `.github/workflows`, for example `git push origin dc4c05e:refs/heads/main`. Never create it from `dev` HEAD once the workflows are committed: creating the branch is a push to `main`, which would publish the v1.0.0 Release and deploy Pages without the owner's merge approval.
 - Then open the PR `dev` → `main` (its `pull_request` run cannot release) and get CI green, including the release-exe smoke test on `windows-latest`.
-- Owner, before M9: make `main` the default branch, or add `main` to the `github-pages` environment's deployment-branch rule, so the first Pages deploy from `main` is not refused.
+- Done 2026-11-17 (owner yes): `main` is the default branch, so the first Pages deploy from `main` should be allowed.
 
 ### After owner approval (M9)
 
