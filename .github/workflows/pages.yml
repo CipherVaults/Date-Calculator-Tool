@@ -1,0 +1,149 @@
+name: Deploy Mobile & Web PWA (GitHub Pages)
+
+on:
+  push:
+    branches: ["main"]
+    paths:
+      - "mobile/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy mobile/ to GitHub Pages
+    if: github.ref == 'refs/heads/main'
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+      - name: Verify mobile engine parity, CSP hashes & repository hygiene (inline node block)
+        shell: bash
+        run: |
+          node scripts/check-mobile.mjs
+          node - <<'NODE'
+          const fs = require("fs");
+          const path = require("path");
+          const vm = require("vm");
+          const crypto = require("crypto");
+          const assert = require("assert");
+          const read = (p) => fs.readFileSync(p, "utf8");
+
+          const fixtures = path.join("crates", "date-core", "tests", "fixtures");
+          const lfFiles = [
+            ...fs.readdirSync("mobile").filter((f) => /\.(?:html|js|webmanifest)$/.test(f)).map((f) => path.join("mobile", f)),
+            ...fs.readdirSync("ui").filter((f) => /\.(?:html|css|js)$/.test(f)).map((f) => path.join("ui", f)),
+            ...fs.readdirSync("scripts").filter((f) => /\.mjs$/.test(f)).map((f) => path.join("scripts", f)),
+            path.join(fixtures, "golden.json"),
+            path.join(fixtures, "vectors.json")
+          ];
+          assert(lfFiles.length >= 12, "Expected the mobile, ui, scripts and fixture LF-enforced files");
+          for (const f of lfFiles) {
+            assert(!fs.readFileSync(f).includes(13), `CR byte detected in ${f}`);
+          }
+
+          const html = read("mobile/index.html");
+          const styleMatch = html.match(/<style>([\s\S]*?)<\/style>/);
+          const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
+          assert(styleMatch && scriptMatch, "Missing <style> or <script> in mobile/index.html");
+          const cspMatch = html.match(/<meta\s+http-equiv="Content-Security-Policy"\s+content="([^"]+)"/i);
+          assert(cspMatch, "Missing CSP <meta> tag in mobile/index.html");
+          const csp = cspMatch[1];
+          const sha = (s) => crypto.createHash("sha256").update(s, "utf8").digest("base64");
+          const directive = (name) => (csp.split(";").map((s) => s.trim()).find((s) => s.startsWith(`${name} `)) || "").split(/\s+/);
+          assert(directive("style-src").includes(`'sha256-${sha(styleMatch[1])}'`), `CSP style-src missing sha256-${sha(styleMatch[1])}`);
+          assert(directive("script-src").includes(`'sha256-${sha(scriptMatch[1])}'`), `CSP script-src missing sha256-${sha(scriptMatch[1])}`);
+          assert(!/frame-ancestors/i.test(csp), "CSP <meta> must not include frame-ancestors");
+          assert(!/unsafe-/i.test(csp), "CSP <meta> must not allow unsafe-*");
+
+          const uiMain = read("ui/main.js");
+          const swCode = read("mobile/sw.js");
+          for (const [name, src] of [["ui/main.js", uiMain], ["mobile <script>", scriptMatch[1]], ["mobile/sw.js", swCode]]) {
+            assert(!/\.innerHTML\b|\.outerHTML\b|\binsertAdjacentHTML\b|\bdocument\.write|\beval\s*\(|\bnew\s+Function\b/.test(src), `Forbidden DOM/eval sink detected in ${name}`);
+          }
+          assert(!/\.style\s*(?:\.|\[|=)/.test(scriptMatch[1]), "Mobile runtime style mutation detected");
+
+          const BEGIN = "/* date-core:begin v1.0.0 */";
+          const END = "/* date-core:end */";
+          const b = html.indexOf(BEGIN);
+          const e = html.indexOf(END);
+          assert(b >= 0 && e > b && html.indexOf(BEGIN, b + 1) < 0 && html.indexOf(END, e + 1) < 0, "Expected exactly one date-core marker pair");
+          const engineSrc = html.slice(b + BEGIN.length, e);
+          assert(!/\bnew\s+Date\b|\bDate\s*[.(]|\bIntl\s*\.|toISOString|getTimezoneOffset|Math\s*\.\s*random/.test(engineSrc), "Engine slice references Date/Intl/clock APIs");
+
+          const manifest = JSON.parse(read("mobile/manifest.webmanifest"));
+          for (const k of ["name", "short_name", "start_url"]) {
+            assert(typeof manifest[k] === "string" && manifest[k].trim().length > 0, `Missing manifest field: ${k}`);
+          }
+          assert(Array.isArray(manifest.icons) && manifest.icons.length > 0, "Missing manifest icons");
+          const mobileRoot = path.resolve("mobile");
+          for (const icon of manifest.icons) {
+            assert(typeof icon.src === "string" && icon.src.length > 0, "Manifest icon missing src");
+            const resolved = path.resolve(mobileRoot, icon.src.replace(/^\.\//, ""));
+            assert(resolved.startsWith(mobileRoot + path.sep), `Manifest icon escapes mobile/: ${icon.src}`);
+            const stat = fs.statSync(resolved);
+            assert(stat.isFile() && stat.size > 0, `Manifest icon missing or empty: ${icon.src}`);
+          }
+
+          const ver = JSON.parse(read("src-tauri/tauri.conf.json")).version;
+          const pkgVer = (p) => ((read(p).split(/^\[/m).find((s) => s.startsWith("package]")) || "").match(/^version\s*=\s*"([^"]+)"/m) || [])[1];
+          assert.strictEqual(pkgVer("src-tauri/Cargo.toml"), ver, "src-tauri/Cargo.toml version");
+          assert.strictEqual(pkgVer("crates/date-core/Cargo.toml"), ver, "date-core Cargo.toml version");
+          assert.strictEqual((scriptMatch[1].match(/\bconst APP_VERSION = "([^"]+)";/) || [])[1], ver, "mobile APP_VERSION");
+          assert(((swCode.match(/\bconst CACHE_NAME = "([^"]+)";/) || [])[1] || "").startsWith(`date-tool-v${ver}-mobile-`), "mobile/sw.js CACHE_NAME version");
+          assert(html.includes(`Mobile &amp; Web v${ver}`) && read("ui/index.html").includes(`Desktop v${ver}`), "Footer versions");
+
+          const ctx = vm.createContext({});
+          vm.runInContext("delete globalThis.Date; delete globalThis.Intl;", ctx);
+          assert.strictEqual(vm.runInContext("typeof Date + '/' + typeof Intl", ctx), "undefined/undefined");
+          vm.runInContext(engineSrc, ctx, { filename: "mobile/index.html:date-core" });
+          const call = vm.runInContext("(function (op, text) { return JSON.stringify(DateCore.call(op, JSON.parse(text))); })", ctx);
+          const golden = JSON.parse(read(path.join(fixtures, "golden.json")));
+          assert(golden.engine === ver && golden.count >= 12000 && golden.cases.length === golden.count, "golden.json header");
+          golden.cases.forEach((c, i) => {
+            const got = call(c.op, JSON.stringify(c.req));
+            const want = JSON.stringify(c.res);
+            assert(got === want, `golden #${i} (${c.op}) differs:\n want ${want.slice(0, 400)}\n got  ${got.slice(0, 400)}`);
+          });
+
+          const res = (op, req) => JSON.parse(call(op, JSON.stringify(req)));
+          const between = (inc) => res("calc_days_between", { startDate: "2024-01-01", endDate: "2024-12-31", includeEndDay: inc }).result.totalDays;
+          assert.strictEqual(between(false), 365);
+          assert.strictEqual(between(true), 366);
+          const business = (endDate, inc, weekend) => res("calc_business_days", { startDate: "2024-01-01", endDate, includeEndDay: inc, calendar: weekend ? { preset: "us", weekend } : { preset: "us" } }).result.businessDays;
+          assert.strictEqual(business("2024-01-31", false), 20);
+          assert.strictEqual(business("2024-01-31", true), 21);
+          assert.strictEqual(business("2024-01-05", true), 4);
+          assert.strictEqual(business("2024-01-05", true, [5, 6]), 3);
+          assert.strictEqual(res("calc_add_subtract", { date: "2024-01-31", operation: "add", months: "1" }).result.resultDate, "2024-02-29");
+          assert.strictEqual(res("calc_add_subtract", { date: "2025-01-31", operation: "add", months: "1" }).result.resultDate, "2025-02-28");
+
+          console.log(`Inline node block OK: ${lfFiles.length} LF files, CSP hashes, DOM sinks, engine Date/Intl ban, manifest, version ${ver} everywhere, ${golden.count} golden cases replayed without Date/Intl, 8 explicit vectors.`);
+          NODE
+      - name: Setup Pages
+        uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+        with:
+          enablement: true
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
+        with:
+          path: "mobile"
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
