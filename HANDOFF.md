@@ -170,7 +170,7 @@ Last local verification (E-09):
 
 M8 and M9 are done (2026-11-17). What is left:
 
-1. **Docs on `main`:** the post-release doc updates on `dev` (README status and these records) reach `main` only through another PR `dev` → `main`, which needs the owner's explicit yes. A docs-only merge is safe: the release job leaves `v1.0.0` unchanged and Pages redeploys the same `mobile/` bytes.
+1. **Docs on `main`:** done 2026-11-17. The post-release doc updates reached `main` through PR #2 (`0c3d6e0`) on the owner's yes. Later doc changes follow the same path: a PR `dev` → `main` with the owner's explicit yes. A docs-only merge is safe: the release job leaves `v1.0.0` unchanged, and Pages does not run, because `pages.yml` only triggers on changes to `mobile/**` or its own file, so the live site is untouched.
 2. **Owner checks (not yet verified):**
    - Install the PWA on a real iPhone and Android phone. So far only "service worker active, manifest served" is verified.
    - Confirm that leaving the Egypt preset should keep the Fri/Sat weekend (from M5).

@@ -33,7 +33,7 @@ Next, for the owner (not something the coordinator can do):
 
 Not run by the coordinator: the NSIS and MSI installers on a clean machine, and a native-window click-through of the desktop UI.
 
-Optional, only on the owner's explicit yes: a docs-only PR `dev` → `main`. Docs updated on `dev` after the merge (README status, these records) are not on `main` until then. It is safe: the release job sees that v1.0.0 exists and leaves its tag and assets unchanged, and Pages redeploys the same `mobile/` bytes. Any new release needs a version bump in every version location plus `.github/release-notes-v<version>.md`.
+Done 2026-11-17 on the owner's "Yes, merge docs": docs-only PR [#2](https://github.com/CipherVaults/Date-Calculator-Tool/pull/2) merged to `main` as `0c3d6e0` (E-14). A docs-only merge is safe: the release job sees that v1.0.0 exists and leaves its tag and assets unchanged, and Pages does not run, because `pages.yml` only triggers on changes to `mobile/**` or its own file, so the live site is untouched. Any later merge to `main` still needs the owner's explicit yes. Any new release needs a version bump in every version location plus `.github/release-notes-v<version>.md`.
 
 ## 🚫 Do not repeat / known pitfalls
 
