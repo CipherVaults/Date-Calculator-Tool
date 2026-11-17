@@ -70,7 +70,7 @@ The project mirrors [Percentage Calculator Tool](https://github.com/CipherVaults
   - desktop: in Rust via `System32\curl.exe`
   - mobile: `fetch` to `api.github.com`
 - strict CSPs on both editions, `permissions: []` on the desktop capability, no `innerHTML`-style sinks
-- single-file Mobile & Web PWA (`mobile/`) with a service worker and manifest, to be served at `https://ciphervaults.github.io/Date-Calculator-Tool/`
+- single-file Mobile & Web PWA (`mobile/`) with a service worker and manifest, served at `https://ciphervaults.github.io/Date-Calculator-Tool/`
 - tests:
   - engine unit tests;
   - the `chrono` oracle over every day in range;
@@ -83,7 +83,7 @@ The project mirrors [Percentage Calculator Tool](https://github.com/CipherVaults
   - 16 backend tests;
   - a real-window `--smoke-test`
 - Node checks with no dependencies (`scripts/check-mobile.mjs`, `scripts/safety-eval.mjs`)
-- Windows NSIS and MSI installers, a portable `.exe`, the standalone mobile HTML and `SHA256SUMS.txt`, produced by CI (M8 workflows, pending their first run)
+- Windows NSIS and MSI installers, a portable `.exe`, the standalone mobile HTML and `SHA256SUMS.txt`, produced by CI and published as the GitHub Release `v1.0.0` on 2026-11-17
 - PBS continuity records under `Documentation/pbs/`
 
 ---
@@ -152,7 +152,7 @@ The project is successful if:
 
 ## Current Final State
 
-At **v1.0.0 (pre-release)** the project is:
+At **v1.0.0 (released 2026-11-17)** the project is:
 
 - implemented as a Cargo workspace (`date-core` + `src-tauri`) with a static `ui/` frontend and a single-file `mobile/` PWA
 - verified locally on 2026-11-17 (ledger E-09):
@@ -162,5 +162,9 @@ At **v1.0.0 (pre-release)** the project is:
   - `check-mobile.mjs`: 13,965/13,965 golden cases × 3 time zones;
   - `safety-eval.mjs`: 48/48 criteria at E-09; 52/52 criteria and 34,669 assertions with the four M8 workflow criteria
 - pushed on `dev` of the public repository `CipherVaults/Date-Calculator-Tool`
-- waiting on M8: the first CI run of the new workflows and the PR `dev` → `main`
-- waiting on M9: the owner's explicit yes to merge, which publishes the v1.0.0 Release and deploys Pages
+- M8 done 2026-11-17 (ledger E-12): PR #1 `dev` → `main` with green CI on Ubuntu and Windows; CI found one defect (`SHA256SUMS.txt` written with CRLF), fixed in `9c06553`
+- M9 done 2026-11-17 (ledger E-13), with the owner's authorization to merge:
+  - PR #1 merged as `5a512a3` on `main`;
+  - GitHub Release `v1.0.0` published with 5 assets; the downloaded files match `SHA256SUMS.txt`, and the downloaded portable exe passed `--smoke-test`;
+  - the PWA is live on GitHub Pages, byte-identical to `mobile/`, with its service worker active
+- still open (not verified): installing the PWA on a real phone, running the installers on a clean machine, the Egypt-preset weekend check, and the owner's acceptance of v1.0.0. The Windows binaries are unsigned.

@@ -30,6 +30,7 @@ Find the authoritative answer to each project question without confusing permiss
 | Desktop UI behaviour | `ui/index.html`, `ui/styles.css`, `ui/main.js` (including the `--smoke-test` suite); behaviour evidence: safety-eval slice C | Authorized UI change |
 | Mobile & Web PWA shell (outside the engine slice) | `mobile/index.html` (UI, storage, CSP hashes), `mobile/sw.js` (`CACHE_NAME`), `mobile/manifest.webmanifest`, `mobile/icons/`; behaviour evidence: safety-eval slice B | Authorized mobile change (recompute CSP hashes, bump `CACHE_NAME`) |
 | Build, test and release how-to; version locations | [HANDOFF.md](../../HANDOFF.md); release notes `.github/release-notes-v<version>.md` | Toolchain, check or release-process change |
+| Published binaries and live PWA | GitHub Release [v1.0.0](https://github.com/CipherVaults/Date-Calculator-Tool/releases/tag/v1.0.0) (5 assets including `SHA256SUMS.txt`, made by the release job in `build.yml` from `main`); Pages <https://ciphervaults.github.io/Date-Calculator-Tool/> (deployed by `pages.yml` from `main`'s `mobile/`) | Owner-approved merge to `main`; a new release needs a version bump and new release notes, otherwise the existing tag and assets are kept |
 | Notion project hub | Deferred by the owner on 2026-11-16 (not created) | Owner request |
 
 ## ⚖️ Conflict rules

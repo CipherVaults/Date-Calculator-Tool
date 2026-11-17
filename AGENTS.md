@@ -59,7 +59,7 @@ node scripts/safety-eval.mjs --json target/safety-eval-system-card.json
 cargo run -p date-calculator-tool --locked -- --smoke-test
 ```
 
-The full CI-equivalent checks live in `.github/workflows/build.yml`. Keep the inline node check block byte-identical in all three copies (two jobs in `build.yml`, one in `pages.yml`); safety-eval `D.workflow-node-block-identical` enforces it. Create `main` only from a commit without `.github/workflows`: any push to `main` runs the release job.
+The full CI-equivalent checks live in `.github/workflows/build.yml`. Keep the inline node check block byte-identical in all three copies (two jobs in `build.yml`, one in `pages.yml`); safety-eval `D.workflow-node-block-identical` enforces it. `main` is the default branch and holds released code: every push to `main` runs the release job and the Pages deploy, so each merge needs the owner's explicit yes. With an unchanged version the release job keeps the existing tag and assets; a new release needs a version bump.
 
 ## 📦 Reporting and stopping
 

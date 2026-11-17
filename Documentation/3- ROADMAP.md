@@ -12,8 +12,8 @@
 | M5 | Desktop UI | 6 cards, mini calendar, settings calendar, history, About; debug and release smoke exit 0; live walkthrough | done 2026-11-17 |
 | M6 | Mobile PWA | engine mirror, CSP hashes, node golden replay under 3 time zones, offline via `serve-mobile.mjs`, phone-width check | done 2026-11-17 |
 | M7 | safety-eval | all slices pass; System Card JSON written | done 2026-11-17 |
-| M8 | CI, docs, repo | workflows, docs, release notes, previews; repo created; `dev` pushed; PR with green CI | in progress 2026-11-17 (PR open, CI pending) |
-| M9 | Release | **owner-approved** merge → v1.0.0 Release (5 assets + SHA256SUMS), Pages live, PWA installs | — |
+| M8 | CI, docs, repo | workflows, docs, release notes, previews; repo created; `dev` pushed; PR with green CI | done 2026-11-17 |
+| M9 | Release | **owner-approved** merge → v1.0.0 Release (5 assets incl. SHA256SUMS), Pages live, PWA installs | done 2026-11-17 (real-phone PWA install: owner check) |
 
 ## Backlog (proposed, not authorized)
 

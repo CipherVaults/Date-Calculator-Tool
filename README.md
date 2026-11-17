@@ -18,17 +18,9 @@
   <a href="Documentation/specs/0-%20FROZEN_DECISIONS.md"><strong>Design decisions</strong></a>
 </p>
 
-> **Status: v1.0.0, not yet released.**
+> **Status: v1.0.0 released on 2026-11-17.**
 >
-> | Part | State |
-> |---|---|
-> | Date engine (`crates/date-core`) | Built and verified |
-> | Desktop app (`src-tauri`, `ui/`) | Built and verified |
-> | Mobile & Web PWA (`mobile/`) | Built and verified |
-> | Cross-surface safety evaluation (`scripts/safety-eval.mjs`) | Built and verified |
-> | CI workflows and the v1.0.0 release | Pending the first CI run and the owner's approval of the merge to `main` |
->
-> The **Mobile & Web App** and **Releases** links go live with the first release. Until then, build from source (see below).
+> The **Releases** link has the Windows installers, the portable `.exe`, the standalone mobile HTML and `SHA256SUMS.txt`. The **Mobile & Web App** link is live on GitHub Pages. Both are built by CI from `main`.
 
 Date Calculator Tool is a sibling of [Percentage Calculator Tool](https://github.com/CipherVaults/Percentage-Calculator-Tool). It shares that project's architecture, security hardening and dark-terminal design, applied to date calculations. Its functional baseline is the familiar online date calculators, with more modes and real holiday rules.
 
@@ -255,6 +247,13 @@ Verify a download before opening it:
 ```powershell
 Get-FileHash .\<downloaded-file> -Algorithm SHA256
 # Compare with the matching line in SHA256SUMS.txt
+```
+
+On Linux or macOS, with the downloaded files and `SHA256SUMS.txt` in one folder:
+
+```bash
+sha256sum -c --ignore-missing SHA256SUMS.txt
+# macOS without sha256sum: shasum -a 256 -c --ignore-missing SHA256SUMS.txt
 ```
 
 ---
