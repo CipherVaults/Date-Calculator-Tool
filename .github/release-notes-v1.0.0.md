@@ -45,6 +45,8 @@ Get-FileHash .\Date.Calculator.Tool_1.0.0_x64-setup.exe -Algorithm SHA256
 # Compare the hash (case-insensitive) with the matching line in SHA256SUMS.txt
 ```
 
+On Linux or macOS, with the files in one folder: `sha256sum -c --ignore-missing SHA256SUMS.txt` (macOS: `shasum -a 256 -c --ignore-missing SHA256SUMS.txt`).
+
 > **Windows SmartScreen:** the Windows binaries are not code-signed, so SmartScreen may warn on first run. Check the file against `SHA256SUMS.txt` first.
 
 ## How it was verified

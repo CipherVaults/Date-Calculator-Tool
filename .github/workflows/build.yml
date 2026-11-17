@@ -359,7 +359,10 @@ jobs:
             $releaseAssetName = $f.Name.Replace(" ", ".")
             "$hash  $releaseAssetName"
           }
-          Set-Content -Path "dist/SHA256SUMS.txt" -Value $lines -Encoding utf8NoBOM
+          # LF line endings so `sha256sum -c SHA256SUMS.txt` works on Linux/macOS (Set-Content writes CRLF on Windows).
+          $sumsPath = Join-Path $PWD "dist/SHA256SUMS.txt"
+          [System.IO.File]::WriteAllText($sumsPath, (($lines -join "`n") + "`n"), [System.Text.UTF8Encoding]::new($false))
+          if ([System.IO.File]::ReadAllBytes($sumsPath) -contains 13) { throw "SHA256SUMS.txt must not contain CR bytes." }
           "version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8NoBOM
           Get-ChildItem -Recurse dist
           Get-Content dist/SHA256SUMS.txt
