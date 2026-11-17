@@ -1762,6 +1762,13 @@ button.mini-cal-cell:hover {
     min-height: 44px;
   }
 
+  /* Matches the 0,2,1 specificity of the base date/time rule. */
+  .input-row input[type="date"],
+  .input-row input[type="time"],
+  .settings-input[type="date"] {
+    min-height: 44px;
+  }
+
   .calc-btn,
   .reset-btn,
   .copy-btn,
@@ -1813,6 +1820,12 @@ button.mini-cal-cell:hover {
     display: block;
     min-height: 44px;
     font-size: 16px;
+  }
+
+  .input-row input[type="date"],
+  .input-row input[type="time"],
+  .settings-input[type="date"] {
+    min-height: 44px;
   }
 
   input[type="date"].date-empty::before,

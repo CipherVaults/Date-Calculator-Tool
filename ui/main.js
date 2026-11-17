@@ -1073,8 +1073,29 @@ async function updateBusinessLive() {
       copyText: str(r.copyText)
     };
 
+    // FROZEN §5: the count covers [earlier, later), so without "include the
+    // later date" the highlight stops the day before the later date. The
+    // engine does that date step; the UI does no date arithmetic.
     const earlier = startDate <= endDate ? startDate : endDate;
-    await setCalendarView("biz", { anchor: earlier, rangeStart: startDate, rangeEnd: endDate });
+    const later = startDate <= endDate ? endDate : startDate;
+    let rangeEnd = later;
+    if (!includeEndDay && earlier !== later) {
+      const prev = okResult(
+        await engine("calc_add_subtract", {
+          date: later,
+          operation: "subtract",
+          years: "",
+          months: "",
+          weeks: "",
+          days: "1",
+          businessDays: false,
+          calendar: currentCalendar()
+        })
+      );
+      if (ticket !== seq.business) return;
+      rangeEnd = prev && isIsoDate(prev.resultDate) ? prev.resultDate : later;
+    }
+    await setCalendarView("biz", { anchor: earlier, rangeStart: earlier, rangeEnd });
   } catch {
     if (ticket !== seq.business) return;
     cardError("business", "Calculation failed.");
@@ -1218,7 +1239,10 @@ async function updateInfoLive() {
       ],
       ["Day of year", `${groupInt(r.dayOfYear)} of ${groupInt(r.daysInYear)} · ${str(r.ordinalText)}`],
       ["Quarter", `Q${groupInt(r.quarter)}`],
-      ["Leap year", `${r.isLeapYear ? "yes" : "no"} (${groupInt(r.year)})`],
+      [
+        "Leap year",
+        `${r.isLeapYear ? "yes" : "no"} (${Number.isInteger(r.year) ? pad(r.year, 4) : "—"})`
+      ],
       [
         "Days left",
         `${groupInt(r.daysRemainingInYear)} in the year · ${groupInt(
@@ -1298,17 +1322,56 @@ function setClockIdle() {
   clock.classList.remove("is-past");
 }
 
+// Set by every non-tick update and cleared only once a full render (result
+// box + mini calendar) has finished, so a tick that supersedes an edit
+// still renders the new target in full.
+let cdFullRenderPending = false;
+
+// "business days left" (BUILD_PLAN §6.6): calc_countdown has no calendar,
+// so the count comes from calc_business_days over [today, target) with the
+// saved calendar. Recomputed on input, settings and day changes, never per tick.
+async function countdownBusinessLine(today, targetDate) {
+  try {
+    const b = okResult(
+      await engine("calc_business_days", {
+        startDate: today,
+        endDate: targetDate,
+        includeEndDay: false,
+        calendar: currentCalendar()
+      })
+    );
+    if (!b || typeof b.businessDays !== "number") return "";
+    const label = b.direction === "backward" ? "business days since" : "business days left";
+    return `${label}: ${groupInt(b.businessDays)} (${calendarShortText()}${
+      b.usedApproximateHolidays === true ? " · estimated holidays" : ""
+    })`;
+  } catch {
+    return "";
+  }
+}
+
 async function updateCountdownLive({ fromTick = false } = {}) {
   const ticket = ++seq.countdown;
+  if (!fromTick) {
+    // Like the other cards: no stale timer or copy target during an edit.
+    clearCountdownTimer();
+    lastValidCalc.countdown = null;
+    cdFullRenderPending = true;
+  }
+  const full = cdFullRenderPending;
   const targetDate = readDate("cdTarget");
   const targetTime = readDate("cdTime");
 
   if (!targetDate) {
     stopCountdown();
+    lastValidCalc.countdown = null;
     cardIdle("countdown");
     setClockIdle();
     setCountdownStatus("idle", "Pick a target date to start the countdown.");
-    if (!fromTick) await setCalendarView("cd", { anchor: null });
+    if (full) {
+      await setCalendarView("cd", { anchor: null });
+      if (ticket === seq.countdown) cdFullRenderPending = false;
+    }
     return;
   }
 
@@ -1320,16 +1383,23 @@ async function updateCountdownLive({ fromTick = false } = {}) {
   };
 
   try {
-    const res = await engine("calc_countdown", { now, target });
+    const [res, businessLine] = await Promise.all([
+      engine("calc_countdown", { now, target }),
+      full ? countdownBusinessLine(now.date, targetDate) : Promise.resolve("")
+    ]);
     if (ticket !== seq.countdown) return;
     const r = okResult(res);
     if (!r) {
       stopCountdown();
+      lastValidCalc.countdown = null;
       const message = errorMessage(res);
       cardError("countdown", message);
       setClockIdle();
       setCountdownStatus(`error|${message}`, `Countdown stopped: ${message}`);
-      if (!fromTick) await setCalendarView("cd", { anchor: targetDate });
+      if (full) {
+        await setCalendarView("cd", { anchor: targetDate });
+        if (ticket === seq.countdown) cdFullRenderPending = false;
+      }
       return;
     }
 
@@ -1366,9 +1436,10 @@ async function updateCountdownLive({ fromTick = false } = {}) {
     };
 
     // The polite result region changes only on an input change or a
-    // calculate, never on a tick; the clock itself is not live.
-    if (!fromTick) {
+    // calculate, never on a plain tick; the clock itself is not live.
+    if (full) {
       renderResult("cdResult", str(r.summaryText), [
+        businessLine,
         `${groupInt(Math.abs(r.totalSeconds))} seconds · ${groupInt(
           Math.abs(r.totalMinutes)
         )} minutes · ${groupInt(Math.abs(r.totalHours))} hours`,
@@ -1380,6 +1451,7 @@ async function updateCountdownLive({ fromTick = false } = {}) {
         rangeEnd: targetDate
       });
       if (ticket !== seq.countdown) return;
+      cdFullRenderPending = false;
     }
 
     cdActive = true;
@@ -1387,6 +1459,7 @@ async function updateCountdownLive({ fromTick = false } = {}) {
   } catch {
     if (ticket !== seq.countdown) return;
     stopCountdown();
+    lastValidCalc.countdown = null;
     cardError("countdown", "Calculation failed.");
     setClockIdle();
   }
@@ -1451,7 +1524,7 @@ function checkDayRollover() {
     updateAgeLive(),
     updateInfoLive(),
     refreshMiniCal("biz"),
-    refreshMiniCal("cd")
+    updateCountdownLive()
   ]);
 }
 
@@ -2010,7 +2083,7 @@ async function refreshCalendarDependents() {
     updateAddLive(),
     updateBusinessLive(),
     updateInfoLive(),
-    refreshMiniCal("cd"),
+    updateCountdownLive(),
     refreshHolidayPreview()
   ]);
 }
@@ -2099,21 +2172,17 @@ function onCustomWeekendChange(event) {
   }, "weekend");
 }
 
-// Owner decision: choosing Egypt switches the weekend to Fri/Sat (the user
-// may change it back). Leaving Egypt while still on Fri/Sat returns to the
-// Sat/Sun default of the other presets.
+// Owner decision (FROZEN): choosing Egypt switches the weekend to Fri/Sat
+// (the user may change it back). Leaving Egypt does not touch the weekend:
+// the rule covers selecting Egypt only, and a reverse switch could overwrite
+// a weekend the user chose.
 function onPresetChange(event) {
   const value = event.currentTarget.value;
   if (!Object.hasOwn(PRESET_LABELS, value)) return Promise.resolve(false);
-  weekendUiCustom = false;
+  if (value === "eg") weekendUiCustom = false;
   return commitSettings((next) => {
-    const previous = next.calendar.preset;
     next.calendar.preset = value;
-    if (value === "eg") {
-      next.calendar.weekend = WEEKEND_PRESETS.friSat.slice();
-    } else if (previous === "eg" && sameDays(next.calendar.weekend, WEEKEND_PRESETS.friSat)) {
-      next.calendar.weekend = WEEKEND_PRESETS.satSun.slice();
-    }
+    if (value === "eg") next.calendar.weekend = WEEKEND_PRESETS.friSat.slice();
   }, "holidays");
 }
 
@@ -2207,6 +2276,7 @@ function renderHolidayRow(instance, index, excludedIds, overrides) {
   box.className = "settings-checkbox";
   box.checked = !excluded;
   box.id = `holidayRow${index}`;
+  box.dataset.focusKey = `${str(instance.id)}|${str(instance.date)}|check`;
   box.addEventListener("change", (event) => {
     trackSettings(setHolidayIncluded(instance.id, event.currentTarget.checked));
   });
@@ -2242,6 +2312,7 @@ function renderHolidayRow(instance, index, excludedIds, overrides) {
     input.min = "1900-01-01";
     input.max = "2199-12-31";
     input.dataset.event = instance.id;
+    input.dataset.focusKey = `${str(instance.id)}|${str(instance.date)}|override`;
     const current = overrides.find((o) => o.event === instance.id && o.date === instance.date);
     input.value = current ? current.date : "";
     syncDateEmpty(input);
@@ -2316,12 +2387,24 @@ async function refreshHolidayPreview() {
     ? cal.excludedHolidays[cal.preset]
     : [];
   const overrides = Array.isArray(cal.hijriOverrides) ? cal.hijriOverrides : [];
+  // Rebuilding the rows destroys the focused control; keep keyboard focus on
+  // the matching control of the new row (FROZEN §15).
+  const active = document.activeElement;
+  const focusKey =
+    active && list.contains(active) && active.dataset ? active.dataset.focusKey || "" : "";
   if (instances.length === 0) {
     list.replaceChildren(holidayPreviewEmpty(`No ${calendarPresetText(cal)} holidays in ${holidayYear}.`));
   } else {
     list.replaceChildren(
       ...instances.map((inst, i) => renderHolidayRow(inst, i, excludedIds, overrides))
     );
+  }
+  if (focusKey) {
+    const target = Array.from(list.querySelectorAll("[data-focus-key]")).find(
+      (el) => el.dataset.focusKey === focusKey
+    );
+    if (target) target.focus();
+    else $("holidayPresetSelect")?.focus();
   }
 
   if (warn && !keepError) {
@@ -2874,8 +2957,16 @@ async function runSmokeTestIfRequested(smokeEnabledArg) {
       $("bizCalGrid").children.length === 42 &&
         txt("bizCalTitle") === "January 2024" &&
         $("bizCalGrid").querySelectorAll(".mini-cal-cell.holiday").length >= 2 &&
-        $("bizCalGrid").querySelectorAll(".mini-cal-cell.in-range").length === 31
+        $("bizCalGrid").querySelectorAll(".mini-cal-cell.in-range").length === 30 &&
+        !$("bizCalGrid").querySelector('.mini-cal-cell.in-range[data-date="2024-01-31"]')
     );
+    await setChecked("bizIncludeEnd", true, updateBusinessLive);
+    check(
+      "biz-mini-calendar-inclusive",
+      $("bizCalGrid").querySelectorAll(".mini-cal-cell.in-range").length === 31 &&
+        Boolean($("bizCalGrid").querySelector('.mini-cal-cell.in-range[data-date="2024-01-31"]'))
+    );
+    await setChecked("bizIncludeEnd", false, updateBusinessLive);
     check("biz-calendar-summary", txt("bizCalendarSummaryText") === "Sat/Sun · US federal");
 
     // Holiday preview year picker and exclusion round trip
@@ -2886,10 +2977,16 @@ async function runSmokeTestIfRequested(smokeEnabledArg) {
       txt("holidayYearValue") === "2024" &&
         txt("holidayPreviewList").includes("Birthday of Martin Luther King, Jr.")
     );
+    // The modal is opened so that the row checkbox can take keyboard focus.
+    openModal("settingsModal", "closeSettingsBtn", null);
+    await refreshHolidayPreview();
     const mlkIndex = previewInstances.findIndex((h) => h.id === "mlkDay");
     const mlkBox = $(`holidayRow${mlkIndex}`);
     check("holiday-preview-row", mlkIndex >= 0 && Boolean(mlkBox) && mlkBox.checked);
+    let mlkFocused = false;
     if (mlkBox) {
+      mlkBox.focus();
+      mlkFocused = document.activeElement === mlkBox;
       mlkBox.checked = false;
       mlkBox.dispatchEvent(new Event("change", { bubbles: true }));
       await settled();
@@ -2899,6 +2996,14 @@ async function runSmokeTestIfRequested(smokeEnabledArg) {
       savedSettings.calendar.excludedHolidays.us.includes("mlkDay") &&
         txt("bizResult").startsWith("=21 business days")
     );
+    check(
+      "holiday-row-keeps-focus",
+      mlkFocused &&
+        document.activeElement !== mlkBox &&
+        document.activeElement?.dataset?.focusKey === mlkBox?.dataset.focusKey &&
+        document.activeElement?.checked === false
+    );
+    closeModal("settingsModal", "settingsBtn");
     const mlkBoxAgain = $(`holidayRow${previewInstances.findIndex((h) => h.id === "mlkDay")}`);
     if (mlkBoxAgain) {
       mlkBoxAgain.checked = true;
@@ -3010,8 +3115,19 @@ async function runSmokeTestIfRequested(smokeEnabledArg) {
       "egypt-weekend-changed-back",
       savedSettings.calendar.preset === "eg" && sameDays(savedSettings.calendar.weekend, [6, 7])
     );
+    await clickAndSettle("weekendFriSatBtn");
     await selectValue("holidayPresetSelect", "none");
-    check("preset-none-saved", savedSettings.calendar.preset === "none");
+    check(
+      "leaving-egypt-keeps-weekend",
+      savedSettings.calendar.preset === "none" &&
+        sameDays(savedSettings.calendar.weekend, [5, 6])
+    );
+    await clickAndSettle("weekendSatSunBtn");
+    check(
+      "preset-none-saved",
+      savedSettings.calendar.preset === "none" &&
+        sameDays(savedSettings.calendar.weekend, [6, 7])
+    );
 
     // 4. Age
     await setInput("ageBirth", "1990-05-17", updateAgeLive);
@@ -3046,7 +3162,8 @@ async function runSmokeTestIfRequested(smokeEnabledArg) {
       "info",
       txt("infoResult").includes("Monday, November 16, 2026") &&
         txt("infoResult").includes("2026-W47") &&
-        txt("infoResult").includes("Today")
+        txt("infoResult").includes("Today") &&
+        txt("infoResult").includes("no (2026)")
     );
     const infoCell = Array.from($("infoCalGrid").children).find(
       (c) => c.dataset.date === "2026-11-16"
@@ -3077,6 +3194,8 @@ async function runSmokeTestIfRequested(smokeEnabledArg) {
         txt("cdResult").includes("45 days, 14 hours until 2027-01-01") &&
         txt("cdStatus").includes("Counting down")
     );
+    // [2026-11-16, 2027-01-01) on Sat/Sun with no preset: 34 weekdays.
+    check("countdown-business-days-left", txt("cdResult").includes("business days left: 34"));
     check("countdown-mini-calendar", $("cdCalGrid").children.length === 42);
     await setInput("cdTarget", "9026-01-01", () => updateCountdownLive());
     check(
