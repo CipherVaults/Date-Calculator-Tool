@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "mobile-pwa",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["scripts/serve-mobile.mjs"],
+      "port": 8787
+    }
+  ]
+}
