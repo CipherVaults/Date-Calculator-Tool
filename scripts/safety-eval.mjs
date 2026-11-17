@@ -34,8 +34,10 @@
 //      mobile raw engine, mobile UI, with paired McNemar/Newcombe statistics).
 //   D  Static hygiene. scripts/check-mobile.mjs (CSP hashes, LF, sinks,
 //      versions, golden replay in three time zones) plus desktop CSP, local
-//      markup, holiday-id parity between Rust and the mobile engine, and the
-//      invoke command allowlist.
+//      markup, holiday-id parity between Rust and the mobile engine, the
+//      invoke command allowlist, and .github/workflows hygiene (SHA pins,
+//      persist-credentials: false, identical inline node blocks, release
+//      gate), each workflow check also proven to fail on planted mutants.
 //
 // Nothing here reads or writes real user data: localStorage is an in-memory
 // object, desktop history/settings live in the mock backend, and the only
@@ -43,7 +45,7 @@
 //
 // Usage: node scripts/safety-eval.mjs [--json PATH] [--stamp ISO] [--seed N]
 //          [--cases N] [--ui-cases N] [--bridge PATH] [--require-clean-git]
-//          [--allow-missing-rust-bridge]
+//          [--allow-missing-rust-bridge] [--workflows-dir PATH]
 // Exits non-zero when any criterion fails. There is no broken-item budget:
 // the reference tolerates up to 5% "broken" items (warn at 2%), but here
 // every exception or unreadable result is a recorded failure, so the
@@ -109,6 +111,8 @@ Options:
   --bridge <path>               eval_bridge executable to use (freshness not checked)
   --require-clean-git           Fail Slice D when the git working tree has uncommitted changes
   --allow-missing-rust-bridge   Dry inspection without the Rust bridge (never a pass)
+  --workflows-dir <path>        Workflow folder for the Slice D workflow checks
+                                (default .github/workflows; used to test mutants)
   --help                        Show this text
 `);
 }
@@ -122,7 +126,8 @@ function parseArgs(argv) {
     uiCases: DEFAULT_UI_CASES,
     bridge: null,
     requireCleanGit: false,
-    allowMissingBridge: false
+    allowMissingBridge: false,
+    workflowsDir: null
   };
   const need = (i, flag) => {
     const v = argv[i + 1];
@@ -165,6 +170,8 @@ function parseArgs(argv) {
       opts.bridge = resolve(need(i++, a));
     } else if (a === "--allow-missing-rust-bridge") {
       opts.allowMissingBridge = true;
+    } else if (a === "--workflows-dir") {
+      opts.workflowsDir = resolve(need(i++, a));
     } else {
       console.error(`[ABORT] Unknown argument: ${a}`);
       process.exit(2);
@@ -4056,6 +4063,264 @@ async function runSliceC(slice, ctx) {
 // 15. Slice D: static hygiene
 // ============================================================================
 
+// --- Workflow hygiene (FROZEN §14). A line-based reading of the workflow
+// YAML, with no dependency: enough structure (steps, jobs, top-level keys) to
+// check pins, checkouts, the inline node blocks and the release gate. Every
+// check is pure (files in, problems out) so it can also be run on planted
+// mutants of the real files, which must each produce a problem.
+
+const WORKFLOW_DIR = join(ROOT, ".github", "workflows");
+const REQUIRED_WORKFLOWS = ["build.yml", "pages.yml"];
+const RELEASE_GATE = "github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))";
+const MIN_NODE_BLOCKS = 3;
+
+function loadWorkflows(dir) {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter((f) => /\.ya?ml$/i.test(f))
+    .sort()
+    .map((name) => ({ name, text: readFileSync(join(dir, name), "utf8").replace(/\r\n?/g, "\n") }));
+}
+
+const yamlIndent = (line) => line.length - line.trimStart().length;
+// Blank or comment-only lines carry no structure.
+const yamlBlank = (line) => /^\s*(?:#.*)?$/.test(line);
+
+// Every item of every `steps:` sequence, with its source lines dedented to
+// the item's dash (block-scalar bodies included verbatim).
+function workflowSteps(file) {
+  const lines = file.text.split("\n");
+  const steps = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(/^(\s*)steps:\s*(?:#.*)?$/);
+    if (!m) continue;
+    const base = m[1].length;
+    let dashIndent = -1;
+    let cur = null;
+    let j = i + 1;
+    for (; j < lines.length; j++) {
+      const line = lines[j];
+      if (yamlBlank(line)) {
+        if (cur) cur.lines.push(line);
+        continue;
+      }
+      const ind = yamlIndent(line);
+      const dash = /^\s*-(?:\s|$)/.test(line);
+      if (ind < base || (ind === base && !dash)) break;
+      if (dash && (dashIndent < 0 || ind === dashIndent)) {
+        if (dashIndent < 0) dashIndent = ind;
+        cur = { file: file.name, line: j + 1, indent: ind, lines: [line] };
+        steps.push(cur);
+      } else if (cur) {
+        cur.lines.push(line);
+      } else {
+        break;
+      }
+    }
+    i = j - 1;
+  }
+  for (const s of steps) {
+    while (s.lines.length > 1 && yamlBlank(s.lines[s.lines.length - 1])) s.lines.pop();
+    s.text = s.lines.map((l) => l.slice(Math.min(s.indent, yamlIndent(l)))).join("\n");
+  }
+  return steps;
+}
+
+// The scalar value or the indented child block of a `key:` at `indent`.
+function yamlEntry(lines, key, indent) {
+  const re = new RegExp(`^ {${indent}}${key}:(.*)$`);
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(re);
+    if (!m) continue;
+    const value = m[1].replace(/\s+#.*$/, "").trim();
+    const block = [];
+    for (let j = i + 1; j < lines.length; j++) {
+      if (yamlBlank(lines[j])) continue;
+      if (yamlIndent(lines[j]) <= indent) break;
+      block.push(lines[j].trim());
+    }
+    return { value, block };
+  }
+  return null;
+}
+
+// Jobs under the top-level `jobs:` key, with their own property indent.
+function workflowJobs(file) {
+  const lines = file.text.split("\n");
+  const start = lines.findIndex((l) => /^jobs:\s*(?:#.*)?$/.test(l));
+  if (start < 0) return [];
+  const jobs = [];
+  let jobIndent = -1;
+  let cur = null;
+  for (let j = start + 1; j < lines.length; j++) {
+    const line = lines[j];
+    if (yamlBlank(line)) {
+      if (cur) cur.lines.push(line);
+      continue;
+    }
+    const ind = yamlIndent(line);
+    if (ind === 0) break;
+    if (jobIndent < 0) jobIndent = ind;
+    const key = ind === jobIndent ? line.match(/^\s*([A-Za-z0-9_-]+):\s*(?:#.*)?$/) : null;
+    if (key) {
+      cur = { file: file.name, id: key[1], line: j + 1, lines: [] };
+      jobs.push(cur);
+    } else if (cur) {
+      cur.lines.push(line);
+    }
+  }
+  for (const job of jobs) {
+    const first = job.lines.find((l) => !yamlBlank(l));
+    job.propIndent = first ? yamlIndent(first) : jobIndent + 2;
+    job.text = job.lines.join("\n");
+  }
+  return jobs;
+}
+
+function normalizeIf(value) {
+  let v = String(value ?? "").trim();
+  if (/^(["']).*\1$/.test(v) && v.length >= 2) v = v.slice(1, -1);
+  const expr = v.match(/^\$\{\{([\s\S]*)\}\}$/);
+  if (expr) v = expr[1];
+  return v.replace(/\s+/g, " ").trim();
+}
+
+// D.workflow-pins: every `uses:` is owner/repo[/path]@<40-hex SHA> # comment.
+function checkWorkflowPins(files) {
+  const problems = [];
+  let count = 0;
+  for (const f of files) {
+    f.text.split("\n").forEach((line, i) => {
+      const m = line.match(/^\s*(?:-\s+)?uses:\s*(.*)$/);
+      if (!m) return;
+      count++;
+      const where = `${f.name}:${i + 1}`;
+      const parts = m[1].match(/^(["']?)([^\s"'#]+)\1(?:\s+#\s*(\S.*?))?\s*$/);
+      if (!parts) {
+        problems.push(`${where}: unparsable uses: ${m[1]}`);
+        return;
+      }
+      if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_./-]+@[0-9a-f]{40}$/.test(parts[2])) {
+        problems.push(`${where}: ${parts[2]} is not pinned to a full 40-hex commit SHA`);
+      }
+      if (!parts[3]) problems.push(`${where}: ${parts[2]} has no version comment`);
+    });
+  }
+  if (count === 0) problems.push("no uses: lines found");
+  return { problems, count };
+}
+
+// D.workflow-persist-credentials: every actions/checkout step sets
+// `persist-credentials: false` under `with:`, and no other value.
+function checkWorkflowCheckouts(files) {
+  const problems = [];
+  let count = 0;
+  let raw = 0;
+  for (const f of files) {
+    raw += (f.text.match(/^\s*(?:-\s+)?uses:\s*["']?actions\/checkout@/gim) || []).length;
+    for (const s of workflowSteps(f)) {
+      const uses = s.text.match(/^(?:-\s+|\s*)uses:\s*["']?([^\s"'#@]+)@/m);
+      if (!uses || uses[1].toLowerCase() !== "actions/checkout") continue;
+      count++;
+      const where = `${s.file}:${s.line}`;
+      const withLine = s.text.match(/^( *)with:\s*(?:#.*)?$/m);
+      const settings = [...s.text.matchAll(/^( *)persist-credentials:\s*(.*?)\s*(?:#.*)?$/gm)];
+      if (!withLine || settings.length !== 1) {
+        problems.push(`${where}: actions/checkout needs exactly one persist-credentials under with: (found ${settings.length})`);
+        continue;
+      }
+      if (!/^(?:false|'false'|"false")$/.test(settings[0][2])) {
+        problems.push(`${where}: actions/checkout has persist-credentials: ${settings[0][2]}`);
+      }
+      if (settings[0][1].length <= withLine[1].length) problems.push(`${where}: persist-credentials is not under with:`);
+    }
+  }
+  if (raw !== count) problems.push(`found ${raw} actions/checkout uses: lines but ${count} inside parsed steps`);
+  if (count === 0) problems.push("no actions/checkout steps found");
+  return { problems, count };
+}
+
+// D.workflow-node-block-identical: every step that runs inline node code
+// (`node -`, `node -e`, `node -p`) is byte-identical, name and shell included,
+// and the block appears in build.yml and pages.yml.
+function checkNodeBlocks(files) {
+  const problems = [];
+  const blocks = [];
+  for (const f of files) {
+    for (const s of workflowSteps(f)) {
+      if (/^\s*node\s+(?:-|-e|--eval|-p|--print)(?:\s|$)/m.test(s.text)) blocks.push(s);
+    }
+  }
+  for (const name of REQUIRED_WORKFLOWS) {
+    if (!blocks.some((b) => b.file === name)) problems.push(`${name} has no inline node block`);
+  }
+  if (blocks.length < MIN_NODE_BLOCKS) problems.push(`expected at least ${MIN_NODE_BLOCKS} copies of the inline node block, found ${blocks.length}`);
+  const ref = blocks[0];
+  for (const b of blocks.slice(1)) {
+    if (b.text === ref.text) continue;
+    const a = ref.text.split("\n");
+    const c = b.text.split("\n");
+    let k = 0;
+    while (k < a.length && k < c.length && a[k] === c[k]) k++;
+    problems.push(`${b.file}:${b.line + k} differs from ${ref.file}:${ref.line + k}: ${JSON.stringify((c[k] ?? "<end>").trimStart()).slice(0, 160)} vs ${JSON.stringify((a[k] ?? "<end>").trimStart()).slice(0, 160)}`);
+  }
+  return { problems, count: blocks.length, sha256: ref ? sha256Text(ref.text) : null, places: blocks.map((b) => `${b.file}:${b.line}`) };
+}
+
+// D.workflow-release-gate: only a job gated on push to main or a v* tag may
+// write contents or run `gh release`; workflow-level permissions never grant
+// contents: write; build.yml has exactly such a release job.
+function checkReleaseGate(files) {
+  const problems = [];
+  let gated = 0;
+  for (const f of files) {
+    const top = f.text.split("\n");
+    const wfPerm = yamlEntry(top, "permissions", 0);
+    if (wfPerm === null) problems.push(`${f.name}: no workflow-level permissions block`);
+    else if (/write/.test(wfPerm.value) || wfPerm.block.some((l) => /^contents:\s*write\b/.test(l))) {
+      problems.push(`${f.name}: workflow-level permissions grant ${wfPerm.value || wfPerm.block.join(", ")}`);
+    }
+    for (const job of workflowJobs(f)) {
+      const perm = yamlEntry(job.lines, "permissions", job.propIndent);
+      const releases = /\bgh\s+release\s+(?:create|upload|edit|delete)\b/.test(job.text);
+      const writes = (perm !== null && (/write/.test(perm.value) || perm.block.some((l) => /^contents:\s*write\b/.test(l)))) || releases;
+      if (!writes) continue;
+      const cond = yamlEntry(job.lines, "if", job.propIndent);
+      const where = `${f.name}:${job.line} (${job.id})`;
+      if (cond === null) problems.push(`${where}: writes contents or publishes releases without an if: gate`);
+      else if (normalizeIf(cond.value) !== RELEASE_GATE) problems.push(`${where}: if: ${cond.value} is not the push-to-main / v* tag gate`);
+      else if (f.name === "build.yml") gated++;
+    }
+  }
+  if (gated !== 1) problems.push(`build.yml should have exactly one gated release job, found ${gated}`);
+  return { problems, gated };
+}
+
+// Replaces the first match in one workflow; a mutant that does not apply is
+// itself a failure (the self-test would otherwise be vacuous).
+function plantMutant(files, name, from, to) {
+  const target = files.find((f) => f.name === name);
+  if (!target) return null;
+  const text = target.text.replace(from, to);
+  if (text === target.text) return null;
+  return files.map((f) => (f === target ? { name: f.name, text } : f));
+}
+
+function workflowCriterion(crit, files, check, mutants) {
+  for (const name of REQUIRED_WORKFLOWS) crit.check(files.some((f) => f.name === name), `.github/workflows/${name} is missing`);
+  const real = check(files);
+  crit.check(real.problems.length === 0, () => real.problems.slice(0, 6).join(" | "));
+  for (const p of real.problems.slice(6)) crit.note(p);
+  let caught = 0;
+  for (const [label, file, from, to] of mutants) {
+    const planted = plantMutant(files, file, from, to);
+    if (!crit.check(planted !== null, `planted mutant "${label}" did not apply to ${file}`)) continue;
+    if (crit.check(check(planted).problems.length > 0, `planted mutant "${label}" in ${file} was not detected`)) caught++;
+  }
+  crit.note(`planted mutants detected: ${caught}/${mutants.length}`);
+  return real;
+}
+
 function runSliceD(slice, ctx) {
   const cm = slice.criterion("check-mobile", "scripts/check-mobile.mjs passes: engine Date/Intl/clock bans, CSP hashes and directives (no frame-ancestors), LF/no BOM, no DOM/eval sinks, no .style in the mobile script, local-only mobile markup, manifest/icons/precache, one version everywhere, golden + vectors + boundary replay in three time zones");
   const dir = mkdtempSync(join(tmpdir(), "date-tool-safety-"));
@@ -4139,6 +4404,50 @@ function runSliceD(slice, ctx) {
     ids.note(`declared ids: ${rustIds.size}, emitted (first page per preset): ${emitted.size}; the slice A excludedHolidays generator draws from all declared ids per preset`);
   }
 
+  const wfDir = ctx.opts.workflowsDir || WORKFLOW_DIR;
+  const workflows = loadWorkflows(wfDir);
+  const SHA_PIN = /@[0-9a-f]{40}( #)/;
+  const pins = slice.criterion("workflow-pins", "every uses: in .github/workflows is owner/repo@<40-hex commit SHA> with a version comment (planted tag-pin, short-SHA and comment-less mutants are detected)");
+  {
+    const r = workflowCriterion(pins, workflows, checkWorkflowPins, [
+      ["tag pin", "build.yml", SHA_PIN, "@v4$1"],
+      ["short SHA", "pages.yml", /@([0-9a-f]{7})[0-9a-f]{33}/, "@$1"],
+      ["no version comment", "pages.yml", /(uses: actions\/deploy-pages@[0-9a-f]{40}) #[^\n]*/, "$1"]
+    ]);
+    pins.note(`uses: lines checked: ${r.count} in ${workflows.map((f) => f.name).join(", ") || "(none)"} from ${wfDir}`);
+  }
+
+  const creds = slice.criterion("workflow-persist-credentials", "every actions/checkout step in .github/workflows sets persist-credentials: false under with: (planted true, missing and moved mutants are detected)");
+  {
+    const r = workflowCriterion(creds, workflows, checkWorkflowCheckouts, [
+      ["persist-credentials: true", "build.yml", /persist-credentials: false/, "persist-credentials: true"],
+      ["persist-credentials removed", "pages.yml", /\n\s+with:\n\s+persist-credentials: false/, ""],
+      ["checkout step without with:", "build.yml", /(\n(\s+)- uses: actions\/checkout@[0-9a-f]{40} # [^\n]*)\n\s+with:\n\s+persist-credentials: false/, "$1"]
+    ]);
+    creds.note(`actions/checkout steps checked: ${r.count}`);
+  }
+
+  const nodeBlocks = slice.criterion("workflow-node-block-identical", `the inline node check block appears in build.yml and pages.yml (at least ${MIN_NODE_BLOCKS} copies) and every copy is byte-identical, step name and shell included (planted one-character drift and a dropped copy are detected)`);
+  {
+    const r = workflowCriterion(nodeBlocks, workflows, checkNodeBlocks, [
+      ["one-character drift", "pages.yml", "assert.strictEqual(between(false), 365);", "assert.strictEqual(between(false), 364);"],
+      ["renamed step", "build.yml", /(- name: [^\n]*)\(inline node block\)/, "$1(inline node check)"],
+      ["copy dropped", "pages.yml", /\n\s+node - <<'NODE'[\s\S]*?\n\s+NODE(?=\n)/, ""]
+    ]);
+    nodeBlocks.note(`copies: ${r.count} at ${r.places.join(", ")}; sha256 ${r.sha256}`);
+  }
+
+  const gate = slice.criterion("workflow-release-gate", `only build.yml's release job may write contents or run gh release, and its if: is exactly \`${RELEASE_GATE}\`; workflow-level permissions never grant contents: write (planted loosened, removed and workflow-wide write mutants are detected)`);
+  {
+    const r = workflowCriterion(gate, workflows, checkReleaseGate, [
+      ["gate loosened to every push", "build.yml", RELEASE_GATE, "github.event_name == 'push'"],
+      ["gate allows dev", "build.yml", "github.ref == 'refs/heads/main'", "startsWith(github.ref, 'refs/heads/')"],
+      ["gate removed", "build.yml", /\n\s+if: github\.event_name == 'push' && \(github\.ref[^\n]*/, ""],
+      ["workflow-wide contents: write", "build.yml", /^permissions:\n {2}contents: read/m, "permissions:\n  contents: write"]
+    ]);
+    gate.note(`gated release jobs in build.yml: ${r.gated}`);
+  }
+
   const git = slice.criterion("clean-git", "with --require-clean-git, the git working tree has no uncommitted or untracked changes (recorded but not gating without the flag)");
   {
     const meta = ctx.git;
@@ -4177,7 +4486,8 @@ async function main() {
       git: gitMetadata()
     },
     artifacts: Object.fromEntries(["mobile/index.html", "mobile/sw.js", "ui/index.html", "ui/main.js", "src-tauri/tauri.conf.json",
-      "crates/date-core/tests/fixtures/golden.json", "crates/date-core/tests/fixtures/vectors.json", "scripts/check-mobile.mjs", "scripts/safety-eval.mjs"]
+      "crates/date-core/tests/fixtures/golden.json", "crates/date-core/tests/fixtures/vectors.json", "scripts/check-mobile.mjs", "scripts/safety-eval.mjs",
+      ".github/workflows/build.yml", ".github/workflows/pages.yml"]
       .map((p) => [p, sha256File(p)])),
     policy: {
       brokenItemTolerance: 0,
@@ -4216,7 +4526,7 @@ async function main() {
     [new Slice("A", "Engine parity", "Rust eval_bridge vs the mobile engine slice (byte-identical) vs an independent JS oracle, over seeded random and adversarial requests"), runSliceA, true],
     [new Slice("B", "Mobile UI behaviour", "mobile/index.html in a mini-DOM with a virtual clock (TZ America/New_York), in-memory localStorage and stubbed fetch/clipboard/service worker"), runSliceB, true],
     [new Slice("C", "Desktop UI behaviour", "ui/index.html + ui/main.js in the mini-DOM with window.__TAURI__.core.invoke routed to the Rust bridge and in-memory history/settings"), runSliceC, true],
-    [new Slice("D", "Static hygiene", "check-mobile.mjs, desktop CSP and markup, Tauri command allowlist, holiday-id parity"), runSliceD, false]
+    [new Slice("D", "Static hygiene", "check-mobile.mjs, desktop CSP and markup, Tauri command allowlist, holiday-id parity, .github/workflows hygiene (SHA pins, persist-credentials, identical inline node blocks, release gate)"), runSliceD, false]
   ];
   if (bridgeOk) ctx.defaultCalendar = (await bridge.result("validate_calendar", { calendar: {} })).calendar;
   for (const [slice, run, needsBridge] of slices) {
@@ -4244,7 +4554,6 @@ async function main() {
     card.slices.push(slice);
   }
   await bridge.close();
-  card.notRun.push(".github/workflows SHA-pin and persist-credentials checks: no workflows in the repository yet");
 
   const all = card.slices.flatMap((s) => s.criteria);
   const assertions = all.reduce((n, c) => n + c.passed + c.failed, 0);

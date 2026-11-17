@@ -18,16 +18,27 @@
   <a href="Documentation/specs/0-%20FROZEN_DECISIONS.md"><strong>Design decisions</strong></a>
 </p>
 
-> **Status: v1.0.0 in development.**
+> **Status: v1.0.0, not yet released.**
 >
 > | Part | State |
 > |---|---|
 > | Date engine (`crates/date-core`) | Built and verified |
-> | Desktop app, mobile PWA, CI | Being built |
+> | Desktop app (`src-tauri`, `ui/`) | Built and verified |
+> | Mobile & Web PWA (`mobile/`) | Built and verified |
+> | Cross-surface safety evaluation (`scripts/safety-eval.mjs`) | Built and verified |
+> | CI workflows and the v1.0.0 release | Pending the first CI run and the owner's approval of the merge to `main` |
 >
 > The **Mobile & Web App** and **Releases** links go live with the first release. Until then, build from source (see below).
 
 Date Calculator Tool is a sibling of [Percentage Calculator Tool](https://github.com/CipherVaults/Percentage-Calculator-Tool). It shares that project's architecture, security hardening and dark-terminal design, applied to date calculations. Its functional baseline is the familiar online date calculators, with more modes and real holiday rules.
+
+---
+
+## Previews
+
+| Desktop & Wide Browser | iPhone & Android PWA |
+| :---: | :---: |
+| <img src="assets/preview-desktop.png" alt="Date Calculator Tool desktop and wide browser dark terminal UI preview" width="540" /> | <img src="assets/preview-mobile.png" alt="Date Calculator Tool iPhone and Android responsive PWA preview" width="220" /> |
 
 ---
 
@@ -152,10 +163,10 @@ crates/date-core/       Pure Rust date engine, holiday rules, API, bridge, golde
 src-tauri/              Tauri v2 desktop shell, hardened commands, icons, capabilities
 ui/                     Desktop frontend (HTML, CSS, JS)
 mobile/                 Single-file PWA, service worker, manifest and icons
-scripts/                Icon generator, mobile checks, safety evaluation
+scripts/                Mobile parity gate, safety evaluation, local PWA server, icon generator
 assets/                 Source icons and README previews
-Documentation/          Specs, roadmap and PBS project records
-.github/workflows/      CI: tests, smoke test, Windows bundles, checksums, Pages
+Documentation/          Context, architecture, roadmap, session summary, specs and PBS records
+.github/                Release notes; workflows/ for CI (tests, smoke test, Windows bundles, checksums, Pages)
 ```
 
 ---
@@ -167,7 +178,7 @@ Documentation/          Specs, roadmap and PBS project records
   ```powershell
   cargo install tauri-cli --version "=2.12.4" --locked
   ```
-- Node.js, only for the checks in `scripts/` (no npm packages)
+- Node.js 20 or newer, only for the checks and tools in `scripts/` (no npm packages)
 - On Windows, run Cargo from **PowerShell**, not Git Bash. Git Bash's `link` shadows the MSVC linker.
 
 ---
@@ -176,6 +187,13 @@ Documentation/          Specs, roadmap and PBS project records
 
 ```powershell
 cargo tauri dev
+```
+
+The Mobile & Web PWA can be tried locally, at the same path GitHub Pages uses:
+
+```powershell
+node scripts/serve-mobile.mjs
+# then open http://127.0.0.1:8787/Date-Calculator-Tool/
 ```
 
 ---
@@ -189,15 +207,29 @@ cargo test --workspace --locked
 cargo run -p date-core --example gen_golden --locked -- --check
 ```
 
-The engine tests check:
-- every day from 0001-01-01 to 9999-12-31 against the `chrono` library;
-- hand-verified vectors;
+The 120 Rust tests (104 engine, 16 desktop backend) check:
+- every day from 0001-01-01 to 9999-12-31 (3,652,059 days) against the `chrono` library;
+- 195 hand-verified vectors;
 - published US/UK/Egypt holiday tables;
 - business-day properties against a day-by-day loop;
+- that every result's copy text fits the 1024-byte history limit;
 - a 13,965-case golden fixture shared with the mobile engine;
-- adversarial and fuzz safety cases.
+- adversarial and fuzz safety cases;
+- the desktop's history and settings storage, validation and update-check parsing.
 
-Desktop smoke test, which launches the real app hidden and in memory only:
+Mobile parity gate. It checks CSP hashes, line endings, banned DOM sinks and that the version matches everywhere, then replays all golden cases through the mobile engine under three time zones:
+
+```powershell
+node scripts/check-mobile.mjs
+```
+
+Cross-surface safety evaluation. It compares the Rust engine, the mobile engine and an independent oracle, drives both UIs in a simulated DOM, and writes a System Card:
+
+```powershell
+node scripts/safety-eval.mjs --json target/safety-eval-system-card.json
+```
+
+Desktop smoke test. It launches the real app hidden, keeps history and settings in memory only, and writes a test string to the clipboard:
 
 ```powershell
 cargo run -p date-calculator-tool --locked -- --smoke-test
@@ -230,8 +262,12 @@ Get-FileHash .\<downloaded-file> -Algorithm SHA256
 ## Documentation
 
 - [`AGENTS.md`](AGENTS.md): contributor and AI-agent conventions, including Git rules
+- [`HANDOFF.md`](HANDOFF.md): how to build, test, change and release the project
+- [`Documentation/1- PROJECT_CONTEXT.md`](Documentation/1-%20PROJECT_CONTEXT.md): purpose and scope
+- [`Documentation/2- ARCHITECTURE.md`](Documentation/2-%20ARCHITECTURE.md): engine, desktop shell, PWA, parity gates and CI
 - [`Documentation/specs/`](Documentation/specs/): frozen decisions, date math spec, holiday rules spec, build plan and design critique
 - [`Documentation/3- ROADMAP.md`](Documentation/3-%20ROADMAP.md): milestones and status
+- [`Documentation/4- SESSION_SUMMARY.md`](Documentation/4-%20SESSION_SUMMARY.md): what was built in each session
 - [`Documentation/pbs/`](Documentation/pbs/): current state, continuation, execution ledger, security dossier and source map
 
 ---

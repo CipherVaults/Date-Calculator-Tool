@@ -1,0 +1,446 @@
+name: Build & Verify (Tauri v2)
+
+on:
+  push:
+    branches: ["main", "dev"]
+    tags: ["v*"]
+  pull_request:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One run per ref; superseded pull-request runs are cancelled, pushes (and so
+# the release job on main and v* tags) always run to completion.
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  rust-checks:
+    name: Rust Core Tests & Web Asset Checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Clippy on date-core
+        run: cargo clippy -p date-core --all-targets --locked -- -D warnings
+      - name: Run date-core tests (vectors, golden parity, chrono oracle over every day)
+        run: cargo test -p date-core --locked
+      - name: Check golden.json is up to date
+        run: cargo run -p date-core --example gen_golden --locked -- --check
+      - name: Verify mobile engine parity, CSP hashes & repository hygiene (inline node block)
+        shell: bash
+        run: |
+          node scripts/check-mobile.mjs
+          node - <<'NODE'
+          const fs = require("fs");
+          const path = require("path");
+          const vm = require("vm");
+          const crypto = require("crypto");
+          const assert = require("assert");
+          const read = (p) => fs.readFileSync(p, "utf8");
+
+          const fixtures = path.join("crates", "date-core", "tests", "fixtures");
+          const lfFiles = [
+            ...fs.readdirSync("mobile").filter((f) => /\.(?:html|js|webmanifest)$/.test(f)).map((f) => path.join("mobile", f)),
+            ...fs.readdirSync("ui").filter((f) => /\.(?:html|css|js)$/.test(f)).map((f) => path.join("ui", f)),
+            ...fs.readdirSync("scripts").filter((f) => /\.mjs$/.test(f)).map((f) => path.join("scripts", f)),
+            path.join(fixtures, "golden.json"),
+            path.join(fixtures, "vectors.json")
+          ];
+          assert(lfFiles.length >= 12, "Expected the mobile, ui, scripts and fixture LF-enforced files");
+          for (const f of lfFiles) {
+            assert(!fs.readFileSync(f).includes(13), `CR byte detected in ${f}`);
+          }
+
+          const html = read("mobile/index.html");
+          const styleMatch = html.match(/<style>([\s\S]*?)<\/style>/);
+          const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
+          assert(styleMatch && scriptMatch, "Missing <style> or <script> in mobile/index.html");
+          const cspMatch = html.match(/<meta\s+http-equiv="Content-Security-Policy"\s+content="([^"]+)"/i);
+          assert(cspMatch, "Missing CSP <meta> tag in mobile/index.html");
+          const csp = cspMatch[1];
+          const sha = (s) => crypto.createHash("sha256").update(s, "utf8").digest("base64");
+          const directive = (name) => (csp.split(";").map((s) => s.trim()).find((s) => s.startsWith(`${name} `)) || "").split(/\s+/);
+          assert(directive("style-src").includes(`'sha256-${sha(styleMatch[1])}'`), `CSP style-src missing sha256-${sha(styleMatch[1])}`);
+          assert(directive("script-src").includes(`'sha256-${sha(scriptMatch[1])}'`), `CSP script-src missing sha256-${sha(scriptMatch[1])}`);
+          assert(!/frame-ancestors/i.test(csp), "CSP <meta> must not include frame-ancestors");
+          assert(!/unsafe-/i.test(csp), "CSP <meta> must not allow unsafe-*");
+
+          const uiMain = read("ui/main.js");
+          const swCode = read("mobile/sw.js");
+          for (const [name, src] of [["ui/main.js", uiMain], ["mobile <script>", scriptMatch[1]], ["mobile/sw.js", swCode]]) {
+            assert(!/\.innerHTML\b|\.outerHTML\b|\binsertAdjacentHTML\b|\bdocument\.write|\beval\s*\(|\bnew\s+Function\b/.test(src), `Forbidden DOM/eval sink detected in ${name}`);
+          }
+          assert(!/\.style\s*(?:\.|\[|=)/.test(scriptMatch[1]), "Mobile runtime style mutation detected");
+
+          const BEGIN = "/* date-core:begin v1.0.0 */";
+          const END = "/* date-core:end */";
+          const b = html.indexOf(BEGIN);
+          const e = html.indexOf(END);
+          assert(b >= 0 && e > b && html.indexOf(BEGIN, b + 1) < 0 && html.indexOf(END, e + 1) < 0, "Expected exactly one date-core marker pair");
+          const engineSrc = html.slice(b + BEGIN.length, e);
+          assert(!/\bnew\s+Date\b|\bDate\s*[.(]|\bIntl\s*\.|toISOString|getTimezoneOffset|Math\s*\.\s*random/.test(engineSrc), "Engine slice references Date/Intl/clock APIs");
+
+          const manifest = JSON.parse(read("mobile/manifest.webmanifest"));
+          for (const k of ["name", "short_name", "start_url"]) {
+            assert(typeof manifest[k] === "string" && manifest[k].trim().length > 0, `Missing manifest field: ${k}`);
+          }
+          assert(Array.isArray(manifest.icons) && manifest.icons.length > 0, "Missing manifest icons");
+          const mobileRoot = path.resolve("mobile");
+          for (const icon of manifest.icons) {
+            assert(typeof icon.src === "string" && icon.src.length > 0, "Manifest icon missing src");
+            const resolved = path.resolve(mobileRoot, icon.src.replace(/^\.\//, ""));
+            assert(resolved.startsWith(mobileRoot + path.sep), `Manifest icon escapes mobile/: ${icon.src}`);
+            const stat = fs.statSync(resolved);
+            assert(stat.isFile() && stat.size > 0, `Manifest icon missing or empty: ${icon.src}`);
+          }
+
+          const ver = JSON.parse(read("src-tauri/tauri.conf.json")).version;
+          const pkgVer = (p) => ((read(p).split(/^\[/m).find((s) => s.startsWith("package]")) || "").match(/^version\s*=\s*"([^"]+)"/m) || [])[1];
+          assert.strictEqual(pkgVer("src-tauri/Cargo.toml"), ver, "src-tauri/Cargo.toml version");
+          assert.strictEqual(pkgVer("crates/date-core/Cargo.toml"), ver, "date-core Cargo.toml version");
+          assert.strictEqual((scriptMatch[1].match(/\bconst APP_VERSION = "([^"]+)";/) || [])[1], ver, "mobile APP_VERSION");
+          assert(((swCode.match(/\bconst CACHE_NAME = "([^"]+)";/) || [])[1] || "").startsWith(`date-tool-v${ver}-mobile-`), "mobile/sw.js CACHE_NAME version");
+          assert(html.includes(`Mobile &amp; Web v${ver}`) && read("ui/index.html").includes(`Desktop v${ver}`), "Footer versions");
+
+          const ctx = vm.createContext({});
+          vm.runInContext("delete globalThis.Date; delete globalThis.Intl;", ctx);
+          assert.strictEqual(vm.runInContext("typeof Date + '/' + typeof Intl", ctx), "undefined/undefined");
+          vm.runInContext(engineSrc, ctx, { filename: "mobile/index.html:date-core" });
+          const call = vm.runInContext("(function (op, text) { return JSON.stringify(DateCore.call(op, JSON.parse(text))); })", ctx);
+          const golden = JSON.parse(read(path.join(fixtures, "golden.json")));
+          assert(golden.engine === ver && golden.count >= 12000 && golden.cases.length === golden.count, "golden.json header");
+          golden.cases.forEach((c, i) => {
+            const got = call(c.op, JSON.stringify(c.req));
+            const want = JSON.stringify(c.res);
+            assert(got === want, `golden #${i} (${c.op}) differs:\n want ${want.slice(0, 400)}\n got  ${got.slice(0, 400)}`);
+          });
+
+          const res = (op, req) => JSON.parse(call(op, JSON.stringify(req)));
+          const between = (inc) => res("calc_days_between", { startDate: "2024-01-01", endDate: "2024-12-31", includeEndDay: inc }).result.totalDays;
+          assert.strictEqual(between(false), 365);
+          assert.strictEqual(between(true), 366);
+          const business = (endDate, inc, weekend) => res("calc_business_days", { startDate: "2024-01-01", endDate, includeEndDay: inc, calendar: weekend ? { preset: "us", weekend } : { preset: "us" } }).result.businessDays;
+          assert.strictEqual(business("2024-01-31", false), 20);
+          assert.strictEqual(business("2024-01-31", true), 21);
+          assert.strictEqual(business("2024-01-05", true), 4);
+          assert.strictEqual(business("2024-01-05", true, [5, 6]), 3);
+          assert.strictEqual(res("calc_add_subtract", { date: "2024-01-31", operation: "add", months: "1" }).result.resultDate, "2024-02-29");
+          assert.strictEqual(res("calc_add_subtract", { date: "2025-01-31", operation: "add", months: "1" }).result.resultDate, "2025-02-28");
+
+          console.log(`Inline node block OK: ${lfFiles.length} LF files, CSP hashes, DOM sinks, engine Date/Intl ban, manifest, version ${ver} everywhere, ${golden.count} golden cases replayed without Date/Intl, 8 explicit vectors.`);
+          NODE
+      - name: Build the release eval bridge
+        run: cargo build -p date-core --release --example eval_bridge --locked
+      - name: Run cross-surface safety & golden parity eval
+        run: node scripts/safety-eval.mjs --json target/safety-eval-system-card.json
+      - name: Upload Ubuntu safety eval system card
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: safety-eval-system-card-ubuntu
+          path: target/safety-eval-system-card.json
+          if-no-files-found: error
+
+  windows-build:
+    name: Windows Build, Smoke Test & Bundles
+    needs: rust-checks
+    runs-on: windows-latest
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.stage.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: ". -> target"
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+
+      - name: Clippy on full workspace (Windows)
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Run full workspace unit tests (Windows)
+        run: cargo test --workspace --locked
+
+      - name: Verify mobile engine parity, CSP hashes & repository hygiene (inline node block)
+        shell: bash
+        run: |
+          node scripts/check-mobile.mjs
+          node - <<'NODE'
+          const fs = require("fs");
+          const path = require("path");
+          const vm = require("vm");
+          const crypto = require("crypto");
+          const assert = require("assert");
+          const read = (p) => fs.readFileSync(p, "utf8");
+
+          const fixtures = path.join("crates", "date-core", "tests", "fixtures");
+          const lfFiles = [
+            ...fs.readdirSync("mobile").filter((f) => /\.(?:html|js|webmanifest)$/.test(f)).map((f) => path.join("mobile", f)),
+            ...fs.readdirSync("ui").filter((f) => /\.(?:html|css|js)$/.test(f)).map((f) => path.join("ui", f)),
+            ...fs.readdirSync("scripts").filter((f) => /\.mjs$/.test(f)).map((f) => path.join("scripts", f)),
+            path.join(fixtures, "golden.json"),
+            path.join(fixtures, "vectors.json")
+          ];
+          assert(lfFiles.length >= 12, "Expected the mobile, ui, scripts and fixture LF-enforced files");
+          for (const f of lfFiles) {
+            assert(!fs.readFileSync(f).includes(13), `CR byte detected in ${f}`);
+          }
+
+          const html = read("mobile/index.html");
+          const styleMatch = html.match(/<style>([\s\S]*?)<\/style>/);
+          const scriptMatch = html.match(/<script>([\s\S]*?)<\/script>/);
+          assert(styleMatch && scriptMatch, "Missing <style> or <script> in mobile/index.html");
+          const cspMatch = html.match(/<meta\s+http-equiv="Content-Security-Policy"\s+content="([^"]+)"/i);
+          assert(cspMatch, "Missing CSP <meta> tag in mobile/index.html");
+          const csp = cspMatch[1];
+          const sha = (s) => crypto.createHash("sha256").update(s, "utf8").digest("base64");
+          const directive = (name) => (csp.split(";").map((s) => s.trim()).find((s) => s.startsWith(`${name} `)) || "").split(/\s+/);
+          assert(directive("style-src").includes(`'sha256-${sha(styleMatch[1])}'`), `CSP style-src missing sha256-${sha(styleMatch[1])}`);
+          assert(directive("script-src").includes(`'sha256-${sha(scriptMatch[1])}'`), `CSP script-src missing sha256-${sha(scriptMatch[1])}`);
+          assert(!/frame-ancestors/i.test(csp), "CSP <meta> must not include frame-ancestors");
+          assert(!/unsafe-/i.test(csp), "CSP <meta> must not allow unsafe-*");
+
+          const uiMain = read("ui/main.js");
+          const swCode = read("mobile/sw.js");
+          for (const [name, src] of [["ui/main.js", uiMain], ["mobile <script>", scriptMatch[1]], ["mobile/sw.js", swCode]]) {
+            assert(!/\.innerHTML\b|\.outerHTML\b|\binsertAdjacentHTML\b|\bdocument\.write|\beval\s*\(|\bnew\s+Function\b/.test(src), `Forbidden DOM/eval sink detected in ${name}`);
+          }
+          assert(!/\.style\s*(?:\.|\[|=)/.test(scriptMatch[1]), "Mobile runtime style mutation detected");
+
+          const BEGIN = "/* date-core:begin v1.0.0 */";
+          const END = "/* date-core:end */";
+          const b = html.indexOf(BEGIN);
+          const e = html.indexOf(END);
+          assert(b >= 0 && e > b && html.indexOf(BEGIN, b + 1) < 0 && html.indexOf(END, e + 1) < 0, "Expected exactly one date-core marker pair");
+          const engineSrc = html.slice(b + BEGIN.length, e);
+          assert(!/\bnew\s+Date\b|\bDate\s*[.(]|\bIntl\s*\.|toISOString|getTimezoneOffset|Math\s*\.\s*random/.test(engineSrc), "Engine slice references Date/Intl/clock APIs");
+
+          const manifest = JSON.parse(read("mobile/manifest.webmanifest"));
+          for (const k of ["name", "short_name", "start_url"]) {
+            assert(typeof manifest[k] === "string" && manifest[k].trim().length > 0, `Missing manifest field: ${k}`);
+          }
+          assert(Array.isArray(manifest.icons) && manifest.icons.length > 0, "Missing manifest icons");
+          const mobileRoot = path.resolve("mobile");
+          for (const icon of manifest.icons) {
+            assert(typeof icon.src === "string" && icon.src.length > 0, "Manifest icon missing src");
+            const resolved = path.resolve(mobileRoot, icon.src.replace(/^\.\//, ""));
+            assert(resolved.startsWith(mobileRoot + path.sep), `Manifest icon escapes mobile/: ${icon.src}`);
+            const stat = fs.statSync(resolved);
+            assert(stat.isFile() && stat.size > 0, `Manifest icon missing or empty: ${icon.src}`);
+          }
+
+          const ver = JSON.parse(read("src-tauri/tauri.conf.json")).version;
+          const pkgVer = (p) => ((read(p).split(/^\[/m).find((s) => s.startsWith("package]")) || "").match(/^version\s*=\s*"([^"]+)"/m) || [])[1];
+          assert.strictEqual(pkgVer("src-tauri/Cargo.toml"), ver, "src-tauri/Cargo.toml version");
+          assert.strictEqual(pkgVer("crates/date-core/Cargo.toml"), ver, "date-core Cargo.toml version");
+          assert.strictEqual((scriptMatch[1].match(/\bconst APP_VERSION = "([^"]+)";/) || [])[1], ver, "mobile APP_VERSION");
+          assert(((swCode.match(/\bconst CACHE_NAME = "([^"]+)";/) || [])[1] || "").startsWith(`date-tool-v${ver}-mobile-`), "mobile/sw.js CACHE_NAME version");
+          assert(html.includes(`Mobile &amp; Web v${ver}`) && read("ui/index.html").includes(`Desktop v${ver}`), "Footer versions");
+
+          const ctx = vm.createContext({});
+          vm.runInContext("delete globalThis.Date; delete globalThis.Intl;", ctx);
+          assert.strictEqual(vm.runInContext("typeof Date + '/' + typeof Intl", ctx), "undefined/undefined");
+          vm.runInContext(engineSrc, ctx, { filename: "mobile/index.html:date-core" });
+          const call = vm.runInContext("(function (op, text) { return JSON.stringify(DateCore.call(op, JSON.parse(text))); })", ctx);
+          const golden = JSON.parse(read(path.join(fixtures, "golden.json")));
+          assert(golden.engine === ver && golden.count >= 12000 && golden.cases.length === golden.count, "golden.json header");
+          golden.cases.forEach((c, i) => {
+            const got = call(c.op, JSON.stringify(c.req));
+            const want = JSON.stringify(c.res);
+            assert(got === want, `golden #${i} (${c.op}) differs:\n want ${want.slice(0, 400)}\n got  ${got.slice(0, 400)}`);
+          });
+
+          const res = (op, req) => JSON.parse(call(op, JSON.stringify(req)));
+          const between = (inc) => res("calc_days_between", { startDate: "2024-01-01", endDate: "2024-12-31", includeEndDay: inc }).result.totalDays;
+          assert.strictEqual(between(false), 365);
+          assert.strictEqual(between(true), 366);
+          const business = (endDate, inc, weekend) => res("calc_business_days", { startDate: "2024-01-01", endDate, includeEndDay: inc, calendar: weekend ? { preset: "us", weekend } : { preset: "us" } }).result.businessDays;
+          assert.strictEqual(business("2024-01-31", false), 20);
+          assert.strictEqual(business("2024-01-31", true), 21);
+          assert.strictEqual(business("2024-01-05", true), 4);
+          assert.strictEqual(business("2024-01-05", true, [5, 6]), 3);
+          assert.strictEqual(res("calc_add_subtract", { date: "2024-01-31", operation: "add", months: "1" }).result.resultDate, "2024-02-29");
+          assert.strictEqual(res("calc_add_subtract", { date: "2025-01-31", operation: "add", months: "1" }).result.resultDate, "2025-02-28");
+
+          console.log(`Inline node block OK: ${lfFiles.length} LF files, CSP hashes, DOM sinks, engine Date/Intl ban, manifest, version ${ver} everywhere, ${golden.count} golden cases replayed without Date/Intl, 8 explicit vectors.`);
+          NODE
+
+      - name: Build the release eval bridge
+        run: cargo build -p date-core --release --example eval_bridge --locked
+
+      - name: Run cross-surface safety & golden parity eval
+        run: node scripts/safety-eval.mjs --json target/safety-eval-system-card.json
+
+      - name: Upload Windows safety eval system card
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: safety-eval-system-card-windows
+          path: target/safety-eval-system-card.json
+          if-no-files-found: error
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version "=2.12.4" --locked
+
+      - name: Build Windows installers (NSIS + MSI) and release binary
+        run: cargo tauri build -- --locked
+
+      # The release exe is a GUI-subsystem binary: invoked bare, PowerShell
+      # neither waits for it nor sees its exit code, so the step would pass
+      # even on a failed smoke run. Start-Process -Wait -PassThru gates on the
+      # exit code, and the redirected stdout must carry SMOKE_TEST_OK.
+      - name: Run real Tauri window smoke test
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP "smoke-stdout.txt"
+          $err = Join-Path $env:RUNNER_TEMP "smoke-stderr.txt"
+          $p = Start-Process -FilePath .\target\release\date-calculator-tool.exe -ArgumentList '--smoke-test' -Wait -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+          Get-Content $out, $err -ErrorAction SilentlyContinue
+          if ($p.ExitCode -ne 0) {
+            Write-Error "Smoke test failed with exit code $($p.ExitCode)."
+            exit 1
+          }
+          if (-not (Select-String -Path $out -SimpleMatch 'SMOKE_TEST_OK' -Quiet)) {
+            Write-Error "Smoke test exited 0 but did not print SMOKE_TEST_OK."
+            exit 1
+          }
+          "Smoke test exit code: $($p.ExitCode)"
+
+      - name: Stage clean deliverables & SHA256SUMS (Installer + Portable + Mobile HTML)
+        id: stage
+        shell: pwsh
+        run: |
+          $conf = Get-Content "src-tauri/tauri.conf.json" -Raw | ConvertFrom-Json
+          $ver = $conf.version
+          foreach ($toml in "src-tauri/Cargo.toml", "crates/date-core/Cargo.toml") {
+            $cargoVer = (Select-String -Path $toml -Pattern '^version\s*=\s*"([^"]+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+            if ($cargoVer -ne $ver) {
+              throw "Version mismatch: tauri.conf.json has $ver but $toml has $cargoVer."
+            }
+          }
+          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue dist
+          New-Item -ItemType Directory -Force -Path dist/Installer, dist/Portable, dist/Mobile | Out-Null
+          $nsis = Get-ChildItem -Path "target/release/bundle/nsis" -Filter "*${ver}*setup*.exe" -File
+          $msi = Get-ChildItem -Path "target/release/bundle/msi" -Filter "*${ver}*.msi" -File
+          if ($nsis.Count -ne 1 -or $msi.Count -ne 1) {
+            throw "Expected exactly 1 NSIS setup and 1 MSI installer matching version $ver (got nsis=$($nsis.Count), msi=$($msi.Count))."
+          }
+          Copy-Item $nsis[0].FullName "dist/Installer/"
+          Copy-Item $msi[0].FullName "dist/Installer/"
+          Copy-Item "target/release/date-calculator-tool.exe" "dist/Portable/Date.Calculator.Tool.Portable.$ver.exe"
+          Copy-Item "mobile/index.html" "dist/Mobile/Date.Calculator.Tool.Mobile.$ver.html"
+
+          $files = Get-ChildItem -Path dist/Installer, dist/Portable, dist/Mobile -File | Sort-Object Name
+          $lines = foreach ($f in $files) {
+            $hash = (Get-FileHash -Path $f.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            $releaseAssetName = $f.Name.Replace(" ", ".")
+            "$hash  $releaseAssetName"
+          }
+          # LF line endings so `sha256sum -c SHA256SUMS.txt` works on Linux/macOS (Set-Content writes CRLF on Windows).
+          $sumsPath = Join-Path $PWD "dist/SHA256SUMS.txt"
+          [System.IO.File]::WriteAllText($sumsPath, (($lines -join "`n") + "`n"), [System.Text.UTF8Encoding]::new($false))
+          if ([System.IO.File]::ReadAllBytes($sumsPath) -contains 13) { throw "SHA256SUMS.txt must not contain CR bytes." }
+          "version=$ver" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8NoBOM
+          Get-ChildItem -Recurse dist
+          Get-Content dist/SHA256SUMS.txt
+
+      - name: Upload Windows deliverables
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: Date-Calculator-Tool-Windows-v${{ steps.stage.outputs.version }}
+          path: dist/**
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: [rust-checks, windows-build]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Download staged deliverables
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: Date-Calculator-Tool-Windows-v${{ needs.windows-build.outputs.version }}
+          path: dist
+
+      - name: Publish GitHub Release on main or version tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.windows-build.outputs.version }}
+        run: |
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Unexpected app version '${VERSION}'; aborting release." >&2
+            exit 1
+          fi
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            TAG="$GITHUB_REF_NAME"
+            if [[ "$TAG" != "v${VERSION}" ]]; then
+              echo "Tag ${TAG} does not match app version v${VERSION}; aborting release." >&2
+              exit 1
+            fi
+          else
+            TAG="v${VERSION}"
+          fi
+
+          shopt -s nullglob
+          ASSETS=(
+            dist/Installer/*setup*.exe
+            dist/Installer/*.msi
+            dist/Portable/*.exe
+            dist/Mobile/*.html
+            dist/SHA256SUMS.txt
+          )
+          test "${#ASSETS[@]}" -eq 5
+
+          NOTES_FILE=".github/release-notes-${TAG}.md"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+              echo "Release $TAG already exists; refusing to overwrite or move an existing release tag." >&2
+              exit 1
+            fi
+            echo "Release $TAG already exists; preserving immutable tag and assets. Bump version to publish a new release."
+            exit 0
+          fi
+
+          if [[ -f "$NOTES_FILE" ]]; then
+            gh release create "$TAG" "${ASSETS[@]}" \
+              --target "$GITHUB_SHA" \
+              --title "Date Calculator Tool Desktop $TAG (Tauri v2 + Rust)" \
+              --notes-file "$NOTES_FILE"
+          else
+            gh release create "$TAG" "${ASSETS[@]}" \
+              --target "$GITHUB_SHA" \
+              --title "Date Calculator Tool Desktop $TAG (Tauri v2 + Rust)" \
+              --generate-notes
+          fi
