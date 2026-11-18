@@ -447,6 +447,101 @@ It also has a **Keep on top** toggle, a **History | Memory** flyout, and an **Op
 - safety-eval: the Mini route renders with only the Standard bundle; `history-changed` sync across two simulated windows.
 - browser-boot: the `#/mini` route boots.
 
+### B5b. Themes: Terminal (default), Daylight and Retro
+*Added 2026-11-18 at the owner's request.*
+
+Every colour, border, shadow, radius and font comes from CSS custom properties in `styles/tokens.css` (B4). A theme is one `[data-theme="…"]` block of token values, plus a small set of component overrides where a theme needs a different shape (Retro bevels). No component hard-codes a colour. A static check fails the build if a raw colour literal appears outside `tokens.css`.
+
+| Theme | Idea | Key tokens (starting values, tuned for AA contrast) |
+|---|---|---|
+| **Terminal** (default) | Today's dark terminal look | bg `#0E0F12`, surface `#161822`, gold `#E9A715`, green `#94C59A`, monospace, square corners |
+| **Daylight** | Warm off-white "paper", not plain white; for people who dislike dark UIs | bg `#F4F1EA`, surface `#FBF9F4`, raised `#FFFFFF`, ink `#1F2330`, muted `#5D6475`, border `#D9D3C7`, accent gold deepened to `#9A6A00`, green `#2E7A4B`, the same monospace and square corners, soft 1px borders |
+| **Retro** | A Windows 95/98 desktop with a nod to XP | desktop teal `#008080` behind the app; window face `#C0C0C0`; 3D bevels (`#FFFFFF` light, `#808080` shadow, `#000000` outer); navy title strips `#000080`→`#1084D0` on card headers and the Mini window; selection `#000080` with white text; `Tahoma`/`MS Sans Serif`-style system UI font for chrome and monospace for numbers; sunken input wells; beveled raised keys that press in on `:active`; dotted focus rectangle |
+
+**Rules**
+- **Settings → Appearance:** `System` (Terminal when the OS is dark, Daylight when it is light), `Terminal`, `Daylight`, `Retro`. It applies instantly with no reload.
+- **No flash of the wrong theme.**
+  - Web: a tiny inline pre-paint script (hash-pinned in the CSP) sets `data-theme` from the stored setting before first paint.
+  - Desktop: the Tauri window background is set per theme at window creation.
+- **Every theme passes WCAG AA:** 4.5:1 for text and 3:1 for UI parts and focus rings. `check-web.mjs` computes the contrast of every declared token pair per theme and fails below AA. `forced-colors` (Windows High Contrast) overrides all themes.
+- The graph palette, calendar markers (today, holiday, range, selection), chips and the finished-countdown chip all have per-theme tokens.
+- `prefers-reduced-motion` turns off the Retro key-press animation and every transition.
+- The Mini Calculator (B5a) follows the app theme. Retro gives it a classic title-strip look.
+- Phone first: themes change colour and texture only, never layout or target size. The Retro bevels are drawn with `box-shadow`, so they never shrink 44 px targets.
+- The theme is stored in `settings.appearance.theme`; this is a new settings field, so the schema version bumps per the B10 rule.
+
+### B5c. Languages (Arabic first, then 11 more)
+*Added 2026-11-18 at the owner's request.*
+
+**v1.0 languages (12):**
+
+| Code | Language | Notes |
+|---|---|---|
+| `en` | English | source and fallback |
+| `ar` | Arabic | **RTL**; owner-reviewed |
+| `es` | Spanish | |
+| `fr` | French | |
+| `de` | German | |
+| `pt-BR` | Portuguese (Brazil) | |
+| `it` | Italian | |
+| `ru` | Russian | |
+| `tr` | Turkish | |
+| `zh-Hans` | Chinese (Simplified) | |
+| `ja` | Japanese | |
+| `ko` | Korean | |
+
+These are the languages most games and apps ship. More (Hindi, Indonesian, Polish …) can be added later as data only.
+
+**Architecture**
+- **Engines stay language-free** (rule unchanged: no locale in `*-core`). Engines return structured results (numbers, dates, codes, parts), plus English text used only for tests and as the fallback.
+- **The UI owns all wording:**
+  - message catalogs `web/i18n/<code>.json`, flat keys such as `"date.countdown.restored": "Countdown restored: {left} left until {when}."`;
+  - a small formatter (no dependencies) with `{name}` placeholders and **CLDR plural categories**: Arabic has 6 forms (zero, one, two, few, many, other), Russian 3, and East Asian languages 1. A hand-written plural table covers the 12 languages and has unit tests.
+- **Numbers and dates are formatted by the UI from built-in tables**, not `Intl`, so results are identical on every device:
+  - per-language decimal and group separators (for example `1.234,5` in de/es/it/pt/tr/ru, `1 234,5` in fr);
+  - month and weekday names;
+  - the first day of the week default;
+  - date order (for example `18/11/2026` in ar/fr, `2026/11/18` in ja/zh/ko).
+- **Arabic digits:** a setting **Digits: Western 0-9 / Arabic-Indic ٠-٩**. The default is Arabic-Indic in `ar` and Western elsewhere. **Input accepts both everywhere**; the existing digit-normaliser is reused.
+- **Calculator input** accepts both `.` and the language's decimal separator. Copy and history use the displayed format, with a "copy plain number" option.
+- **History entries** store structured inputs (B10), so restoring an entry re-renders it in the current language. Stored `resultText`/`copyText` stay in the language used when it was recorded.
+- **Holiday names** (US, UK, Egypt presets) get translated names in every catalog; Egyptian holidays have proper Arabic names.
+- **The language picker** (Settings → Language) shows each language in its own script ("العربية", "Deutsch" …). The first run follows the browser or OS language when it is one of the 12; otherwise English. It switches instantly with no reload.
+
+**RTL (Arabic)**
+- `<html lang dir>` is set per language.
+- All layout CSS uses **logical properties**: `margin-inline-start`, `inset-inline-end`, `text-align: start`. A static check bans physical `left/right` in layout rules (with an allowlist).
+- The drawer and history pane swap sides, and icons with direction (‹ ›, back, swap ↔) mirror.
+- **What stays left-to-right:**
+  - numbers, the calculator display, expressions and the keypad order (as in the Windows and Android calculators in Arabic);
+  - programmer bit grids;
+  - graph axes.
+- Mixed text uses `<bdi>` and Unicode isolation (`dir="auto"` on user text such as history notes and custom holiday names), so numbers and Latin names never scramble.
+- Mini calendars follow reading direction: in RTL the first weekday is on the right and the ‹ › buttons swap meaning and position.
+
+**Fonts.** The theme fonts keep the monospace stack for numbers. Text falls back to system fonts that have Arabic and CJK glyphs (`Segoe UI`, `Noto Sans Arabic`, `Noto Sans CJK`, `system-ui`), which keeps the app offline with no web fonts. Line height and sizes are adjusted per script where needed.
+
+**Translation quality**
+- `en` is the source. The other 11 catalogs are drafted by the agents, then checked by an independent translator agent per language for meaning, tone and length.
+- Arabic is reviewed by the owner.
+- Each non-English catalog carries a `_meta.reviewed` flag, and the About screen notes which languages are machine-assisted.
+- Strings are written short so they fit on a phone.
+
+**Tests**
+- `check-i18n.mjs`:
+  - every key exists in every catalog;
+  - placeholders match the English source exactly;
+  - plural sets are complete per language;
+  - no HTML or markup in strings;
+  - no unused keys.
+- **Pseudo-locales** used in CI:
+  - `en-XA`: about 35% longer, with accents; catches truncation and overflow at 360 px;
+  - `ar-XB`: forced RTL; catches physical-direction bugs.
+- browser-boot captures every tool in `ar`, `de` (long words) and `ja` at 390 px. A layout check fails on horizontal scroll or clipped text.
+- Unit tests cover the plural table, separators, digit normalisation and RTL number isolation.
+
+**Order of work.** The infrastructure goes in the shell milestone (**M2a**): catalogs, the formatter, logical CSS, the theme tokens, the pre-paint theme script and the language picker with `en` only. Every tool is then built with catalog keys from day one, and nothing is retrofitted. Translations and the two extra themes come later (**M9a**, **M9b**), once the strings are stable.
+
 ### B6. Numeric model
 **`calc-num::Dec`**
 - Sign, base-10⁹ `u32` limbs, |exponent| ≤ 9999, otherwise `overflow`.
@@ -719,7 +814,7 @@ The clipboard export and the paste import are verified on an iOS home-screen ins
 | A3 | Date v1.1.0 release | A7 complete | **merge dev→main** |
 | M0 | repo, workflow-free `main`, `dev`, workspace, toolchain, CI skeleton, D-slice | CI green on `dev`; `main` has no workflows | **create repo; `main` initial commit; Pages enablement; identifier; `libm`; serde_json rule; browser floor** |
 | M1 | `pcalc-api` (per-op caps), `pcalc-wasm`, `check-wasm`, single-file builder, CSP spike in four engines, IPC graph-payload measurement | goldens byte-equal native/WASM under 3 time zones; sizes and IPC timing recorded | — |
-| M2a | shell, adapters, tokens, navigation, `pcalc-store`, IndexedDB store, hashed SW and upgrade test, rescue view | browser-boot incl. upgrade and no-WASM; desktop smoke | — |
+| M2a | **+ i18n and theme infrastructure (B5b/B5c): catalogs, formatter, plural table, logical CSS, tokens, pre-paint theme script, language and theme pickers** · shell, adapters, tokens, navigation, `pcalc-store`, IndexedDB store, hashed SW and upgrade test, rescue view | browser-boot incl. upgrade and no-WASM; desktop smoke | — |
 | M2b | Date port | Date safety-eval B/C under both adapters | — |
 | M2c | Percent port | PCT criteria under both adapters | — |
 | M3 | history (expression-based schema), settings, state, countdowns, export/import | corruption, read-error, quota, newer-schema and cap-edge tests; export round-trip | export method |
@@ -731,6 +826,8 @@ The clipboard export and the paste import are verified on an iOS home-screen ins
 | M6 | Programmer | BigInt oracle, hand vectors; bit keypad accessible | — |
 | M7 | converters (12) | NIST vectors and round trips | — |
 | M8 | graphing | analytic suite; budgets met or fallback documented; trace and table accessible | cut line if it slips (current answer: ship all) |
+| M9a | **Languages (B5c):** 11 translated catalogs (ar, es, fr, de, pt-BR, it, ru, tr, zh-Hans, ja, ko) incl. holiday names; independent translation check per language; Arabic RTL polish | `check-i18n` clean; pseudo-locale and 390 px screenshots for ar/de/ja without overflow; owner reviews Arabic | owner Arabic review |
+| M9b | **Themes (B5b):** Daylight and Retro (95/98 with an XP nod), `System` option, per-theme graph/calendar tokens | AA contrast check passes for every theme; no wrong-theme flash; screenshots of every tool in all 3 themes at 390 px and desktop | — |
 | M9 | hardening, accessibility audit, docs, release notes | full checks; manual device checklist in the ledger | — |
 | M10 | v1.0.0 via PR dev→main | 5 assets; `sha256sum -c` passes; Pages live | **merge → release** |
 | M11 | Date v1.2.0, PCT v2.4.0 | notice, file+clipboard export verified on iOS, PCT history fix | **each merge and release** |
@@ -753,7 +850,7 @@ No time estimates are given **[A: the owner may ask for them after M1, once size
 
 ### B19. Out of scope for v1.0
 - Currency, sync, accounts, telemetry; notifications or alarms.
-- Code signing; macOS and Linux builds; translations; a light theme.
+- Code signing; macOS and Linux builds. (Translations and a light theme were moved into v1.0 on 2026-11-18: B5b, B5c.)
 - Complex numbers, matrices, statistics, `rand`, gamma.
 - Implicit, polar, parametric or inequality graphs; analysis, sliders, image export.
 - Month as a time unit.
