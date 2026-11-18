@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'sha256-4QF67PMwTm0C60lqx4nxCC+SjmRjojqz6xk1qX17bvc='; script-src 'sha256-kD+yoidvATqHILLs4cuoVyMQ3KSPPRpY+LsiIyE8Xck='; worker-src 'self'; child-src 'self'; img-src 'self' data:; manifest-src 'self'; connect-src 'self' https://api.github.com; object-src 'none'; base-uri 'none'; form-action 'none';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'sha256-btVhxZdJo7m0Rreuf9XyFMycrSmpAYF+hU7ws++6afk='; script-src 'sha256-hXB1Yb/hh84x5P/6+2RWG8NAHGyGAS88KON8Zvfegls='; worker-src 'self'; child-src 'self'; img-src 'self' data:; manifest-src 'self'; connect-src 'self' https://api.github.com; object-src 'none'; base-uri 'none'; form-action 'none';">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="theme-color" content="#0E0F12">
   <meta name="color-scheme" content="dark">
@@ -1983,6 +1983,139 @@ button.mini-cal-cell {
   }
 }
 
+/* v1.2.0 card layout (plan A8, ported from Percentage Calculator Tool
+   v2.3.0): a header row per card with a drag handle, the heading and a
+   collapse button. Collapse, drag and drop state are classes only. */
+.calc-card-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.8rem;
+  margin-bottom: 1rem;
+}
+
+.calc-card-heading {
+  flex: 1;
+  min-width: 0;
+}
+
+.calc-card-heading .section-subtitle {
+  margin-bottom: 0;
+}
+
+.drag-handle,
+.collapse-btn {
+  flex-shrink: 0;
+  background: #0E0F12;
+  border: 1px solid #3a3f4c;
+  border-radius: 0;
+  color: #94C59A;
+  font: inherit;
+  line-height: 1.5;
+  padding: 0.2rem 0.45rem;
+  transition: border-color 0.1s ease, color 0.1s ease;
+}
+
+.drag-handle {
+  touch-action: none;
+  cursor: grab;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.drag-handle:active {
+  cursor: grabbing;
+}
+
+.collapse-btn {
+  cursor: pointer;
+  white-space: nowrap;
+  font-size: 0.75rem;
+}
+
+.drag-handle:hover,
+.collapse-btn:hover,
+.drag-handle:focus-visible,
+.collapse-btn:focus-visible {
+  color: #E9A715;
+  border-color: #E9A715;
+  outline: 1px solid #E9A715;
+  outline-offset: 2px;
+}
+
+.calc-section.card-collapsed .calc-card-body {
+  display: none;
+}
+
+/* Collapsed: the title row only, so the card takes almost no scroll space. */
+.calc-section.card-collapsed .calc-card-header {
+  align-items: center;
+  margin-bottom: 0;
+}
+
+.calc-section.card-collapsed .calc-card-heading .section-title {
+  margin-bottom: 0;
+}
+
+.calc-section.card-collapsed .calc-card-heading .section-subtitle {
+  display: none;
+}
+
+.calc-section.card-dragging {
+  opacity: 0.55;
+  border-left-color: #94C59A;
+}
+
+/* The gold drop line before or after the target card. */
+.calc-section.card-drop-before {
+  box-shadow: 0 -3px 0 #E9A715;
+}
+
+.calc-section.card-drop-after {
+  box-shadow: 0 3px 0 #E9A715;
+}
+
+/* The move menu under a card's title row: Move up / Move down / Done, the
+   tap, click and screen-reader alternative to dragging (hidden with the
+   .hidden class). */
+.card-move-menu {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: -0.35rem 0 1rem;
+}
+
+.calc-section.card-collapsed .card-move-menu {
+  margin: 0.6rem 0 0;
+}
+
+.card-move-btn {
+  background: #0E0F12;
+  border: 1px solid #3a3f4c;
+  border-radius: 0;
+  color: #94C59A;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  padding: 0.25rem 0.75rem;
+  transition: border-color 0.1s ease, color 0.1s ease;
+}
+
+.card-move-btn:hover,
+.card-move-btn:focus-visible {
+  color: #E9A715;
+  border-color: #E9A715;
+  outline: 1px solid #E9A715;
+  outline-offset: 2px;
+}
+
+/* The Add / Subtract mode toggle sits above the inputs, inside the body. */
+.mode-row {
+  display: flex;
+  flex-wrap: wrap;
+  margin-bottom: 0.65rem;
+}
+
 /* Touch: 44 px targets, 16 px inputs (no iOS zoom) */
 @media (pointer: coarse) {
   .input-row input,
@@ -2020,6 +2153,16 @@ button.mini-cal-cell {
 
   .mini-cal-nav,
   .stepper-btn {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .card-move-btn,
+  .drag-handle,
+  .collapse-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     min-width: 44px;
     min-height: 44px;
   }
@@ -2093,11 +2236,23 @@ button.mini-cal-cell {
   .mini-cal-cell:focus-visible {
     outline: 2px solid Highlight;
   }
+
+  .calc-section.card-drop-before,
+  .calc-section.card-drop-after {
+    outline: 2px solid Highlight;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;
+  }
+
+  .calc-section,
+  .card-move-btn,
+  .drag-handle,
+  .collapse-btn {
+    transition: none;
   }
 }
 
@@ -2228,12 +2383,46 @@ label {
   outline: none;
 }
 
+/* v1.2.0 card layout (plan A8) on phones. Only the handle has
+   `touch-action: none` (above), so a finger on the handle drags the card
+   while a swipe anywhere else on the card scrolls the page; a long press
+   on the handle never opens the callout or selects text. */
+.drag-handle {
+  -webkit-touch-callout: none;
+}
+
+.calc-card-heading .section-title {
+  overflow-wrap: anywhere;
+}
+
 @media (max-width: 760px) {
   .input-row input,
   .settings-input,
   .history-filter {
     font-size: 16px;
     min-height: 44px;
+  }
+
+  /* 44 x 44 px thumb targets at every phone width, not only on coarse
+     pointers; a collapsed card is a slim title row. */
+  .card-move-btn,
+  .drag-handle,
+  .collapse-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .drag-handle {
+    font-size: 1.05rem;
+  }
+
+  .calc-section.card-collapsed {
+    padding-top: 0.55rem;
+    padding-bottom: 0.55rem;
+    margin-bottom: 1rem;
   }
 
   .input-row input[type="date"],
@@ -2294,6 +2483,10 @@ label {
   .history-readonly-actions .reset-btn {
     flex: 1 1 auto;
   }
+
+  .calc-card-header {
+    gap: 0.5rem;
+  }
 }
 
 @media (max-width: 400px) {
@@ -2301,6 +2494,10 @@ label {
     padding-left: 0.6rem;
     padding-right: 0.6rem;
   }
+}
+.card-move-btn[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: default;
 }
 </style>
 </head>
@@ -2331,311 +2528,351 @@ label {
   </div>
 
   <nav class="quick-nav" aria-label="Jump to calculator">
-    <a class="quick-link" href="#card-between">between</a>
-    <a class="quick-link" href="#card-add">add / subtract</a>
-    <a class="quick-link" href="#card-business">business days</a>
-    <a class="quick-link" href="#card-age">age</a>
-    <a class="quick-link" href="#card-info">date info</a>
-    <a class="quick-link" href="#card-countdown">countdown</a>
+    <a class="quick-link" href="#card-between" data-calc="between">between</a>
+    <a class="quick-link" href="#card-add" data-calc="add">add / subtract</a>
+    <a class="quick-link" href="#card-business" data-calc="business">business days</a>
+    <a class="quick-link" href="#card-age" data-calc="age">age</a>
+    <a class="quick-link" href="#card-info" data-calc="info">date info</a>
+    <a class="quick-link" href="#card-countdown" data-calc="countdown">countdown</a>
     <a class="quick-link" href="#historySection">history</a>
   </nav>
 
+  <p class="sr-only" id="cardMoveHint">Drag to move this card, or tap or press it for Move up and Move down buttons. Arrow Up and Arrow Down also move it.</p>
+  <div class="sr-only" id="layoutLiveStatus" role="status" aria-live="polite" aria-atomic="true"></div>
+
+  <div class="cards-container" id="cardsContainer">
   <!-- 1. Days Between Two Dates -->
-  <div class="calc-section" id="card-between">
-    <div class="calc-grid">
-      <div class="left-panel">
+  <div class="calc-section" id="card-between" data-calc="between">
+    <div class="calc-card-header">
+      <button class="drag-handle" type="button" aria-label="Move Days Between Two Dates" aria-describedby="cardMoveHint" title="Drag to reorder">⠿</button>
+      <div class="calc-card-heading">
         <div class="section-title" id="betweenTitle">Days Between Two Dates</div>
         <div class="section-subtitle">Counts the years, months and days between two dates, with totals in days, weeks, hours, minutes and seconds.</div>
-
-        <div class="input-row">
-          <label for="betweenStart">Start date</label>
-          <div class="date-row">
-            <input class="date-input date-empty" type="date" id="betweenStart" min="0001-01-01" max="9999-12-31" placeholder="YYYY-MM-DD">
-            <button class="today-btn" id="betweenStartTodayBtn" type="button" data-target="betweenStart" aria-label="Set start date to today">today</button>
-          </div>
-        </div>
-        <div class="swap-row">
-          <button class="swap-btn" id="swapBetweenBtn" type="button" title="Swap start and end dates">⇅ swap dates</button>
-        </div>
-        <div class="input-row">
-          <label for="betweenEnd">End date</label>
-          <div class="date-row">
-            <input class="date-input date-empty" type="date" id="betweenEnd" min="0001-01-01" max="9999-12-31" placeholder="YYYY-MM-DD">
-            <button class="today-btn" id="betweenEndTodayBtn" type="button" data-target="betweenEnd" aria-label="Set end date to today">today</button>
-          </div>
-        </div>
-        <label class="check-row" for="betweenIncludeEnd">
-          <input class="settings-checkbox" type="checkbox" id="betweenIncludeEnd">
-          <span>include the later date (+1 day)</span>
-        </label>
-
-        <div class="button-group">
-          <button class="calc-btn" id="calcBetweenBtn" type="button">calculate</button>
-          <button class="reset-btn" id="resetBetweenBtn" type="button">clear</button>
-          <button class="copy-btn" id="copyBetweenBtn" type="button">copy</button>
-        </div>
-
-        <div class="result" id="betweenResult" role="status" aria-live="polite">—</div>
       </div>
+      <button class="collapse-btn" type="button" aria-expanded="true" aria-controls="card-between-body" aria-label="Collapse Days Between Two Dates">[ − ]</button>
+    </div>
+    <div class="calc-card-body" id="card-between-body">
+      <div class="calc-grid">
+        <div class="left-panel">
+          <div class="input-row">
+            <label for="betweenStart">Start date</label>
+            <div class="date-row">
+              <input class="date-input date-empty" type="date" id="betweenStart" min="0001-01-01" max="9999-12-31" placeholder="YYYY-MM-DD">
+              <button class="today-btn" id="betweenStartTodayBtn" type="button" data-target="betweenStart" aria-label="Set start date to today">today</button>
+            </div>
+          </div>
+          <div class="swap-row">
+            <button class="swap-btn" id="swapBetweenBtn" type="button" title="Swap start and end dates">⇅ swap dates</button>
+          </div>
+          <div class="input-row">
+            <label for="betweenEnd">End date</label>
+            <div class="date-row">
+              <input class="date-input date-empty" type="date" id="betweenEnd" min="0001-01-01" max="9999-12-31" placeholder="YYYY-MM-DD">
+              <button class="today-btn" id="betweenEndTodayBtn" type="button" data-target="betweenEnd" aria-label="Set end date to today">today</button>
+            </div>
+          </div>
+          <label class="check-row" for="betweenIncludeEnd">
+            <input class="settings-checkbox" type="checkbox" id="betweenIncludeEnd">
+            <span>include the later date (+1 day)</span>
+          </label>
 
-      <div class="right-panel">
-        <div class="formula-title">live formula</div>
-        <ul class="trace live-formula" id="betweenTrace" aria-label="Days between: calculation steps">
-          <li class="trace-hint">start + years → + months → + days = end</li>
-        </ul>
-        <div class="live-result" id="betweenLiveResult">→ —</div>
+          <div class="button-group">
+            <button class="calc-btn" id="calcBetweenBtn" type="button">calculate</button>
+            <button class="reset-btn" id="resetBetweenBtn" type="button">clear</button>
+            <button class="copy-btn" id="copyBetweenBtn" type="button">copy</button>
+          </div>
+
+          <div class="result" id="betweenResult" role="status" aria-live="polite">—</div>
+        </div>
+
+        <div class="right-panel">
+          <div class="formula-title">live formula</div>
+          <ul class="trace live-formula" id="betweenTrace" aria-label="Days between: calculation steps">
+            <li class="trace-hint">start + years → + months → + days = end</li>
+          </ul>
+          <div class="live-result" id="betweenLiveResult">→ —</div>
+        </div>
       </div>
     </div>
   </div>
 
   <!-- 2. Add / Subtract -->
-  <div class="calc-section" id="card-add">
-    <div class="calc-grid">
-      <div class="left-panel">
-        <div class="section-title-row">
-          <div class="section-title" id="addTitle">Add / Subtract</div>
-          <div class="mode-toggle" role="group" aria-label="Add or subtract">
-            <button class="mode-btn active" id="addModeAddBtn" data-mode="add" type="button" aria-pressed="true">+ add</button>
-            <button class="mode-btn" id="addModeSubtractBtn" data-mode="subtract" type="button" aria-pressed="false">− subtract</button>
-          </div>
-        </div>
+  <div class="calc-section" id="card-add" data-calc="add">
+    <div class="calc-card-header">
+      <button class="drag-handle" type="button" aria-label="Move Add / Subtract" aria-describedby="cardMoveHint" title="Drag to reorder">⠿</button>
+      <div class="calc-card-heading">
+        <div class="section-title" id="addTitle">Add / Subtract</div>
         <div class="section-subtitle" id="addSubtitle">Adds years, months, weeks and days to a date, or subtracts them. Month ends clamp (Jan 31 + 1 month = Feb 28/29).</div>
-
-        <div class="input-row">
-          <label for="addStart">Start date</label>
-          <div class="date-row">
-            <input class="date-input date-empty" type="date" id="addStart" min="0001-01-01" max="9999-12-31" placeholder="YYYY-MM-DD">
-            <button class="today-btn" id="addStartTodayBtn" type="button" data-target="addStart" aria-label="Set start date to today">today</button>
-          </div>
-        </div>
-
-        <div class="amount-grid">
-          <div class="input-row">
-            <label for="addYears" id="addYearsLabel">Years</label>
-            <input type="text" inputmode="numeric" id="addYears" placeholder="0" autocomplete="off" spellcheck="false" maxlength="16">
-          </div>
-          <div class="input-row">
-            <label for="addMonths" id="addMonthsLabel">Months</label>
-            <input type="text" inputmode="numeric" id="addMonths" placeholder="0" autocomplete="off" spellcheck="false" maxlength="16">
-          </div>
-          <div class="input-row">
-            <label for="addWeeks" id="addWeeksLabel">Weeks</label>
-            <input type="text" inputmode="numeric" id="addWeeks" placeholder="0" autocomplete="off" spellcheck="false" maxlength="16">
-          </div>
-          <div class="input-row">
-            <label for="addDays" id="addDaysLabel">Days</label>
-            <input type="text" inputmode="numeric" id="addDays" placeholder="0" autocomplete="off" spellcheck="false" maxlength="16">
-          </div>
-        </div>
-
-        <label class="check-row" for="addBusiness">
-          <input class="settings-checkbox" type="checkbox" id="addBusiness" aria-describedby="addBusinessNote">
-          <span>count days as business days</span>
-        </label>
-        <div class="business-note hidden" id="addBusinessNote">Years and months step on the calendar first; then weeks count as business weeks (weeks × working days per week), then business days.</div>
-        <div class="calendar-summary hidden" id="addCalendarSummary">
-          <span class="calendar-summary-text" id="addCalendarSummaryText">Sat/Sun · no holidays</span>
-          <button class="link-btn" id="addCalendarEditBtn" type="button">edit in settings</button>
-        </div>
-
-        <div class="button-group">
-          <button class="calc-btn" id="calcAddBtn" type="button">calculate</button>
-          <button class="reset-btn" id="resetAddBtn" type="button">clear</button>
-          <button class="copy-btn" id="copyAddBtn" type="button">copy</button>
-        </div>
-
-        <div class="result" id="addResult" role="status" aria-live="polite">—</div>
       </div>
+      <button class="collapse-btn" type="button" aria-expanded="true" aria-controls="card-add-body" aria-label="Collapse Add / Subtract">[ − ]</button>
+    </div>
+    <div class="calc-card-body" id="card-add-body">
+      <div class="calc-grid">
+        <div class="left-panel">
+          <div class="mode-row">
+            <div class="mode-toggle" role="group" aria-label="Add or subtract">
+              <button class="mode-btn active" id="addModeAddBtn" data-mode="add" type="button" aria-pressed="true">+ add</button>
+              <button class="mode-btn" id="addModeSubtractBtn" data-mode="subtract" type="button" aria-pressed="false">− subtract</button>
+            </div>
+          </div>
 
-      <div class="right-panel">
-        <div class="formula-title">live formula</div>
-        <ul class="trace live-formula" id="addTrace" aria-label="Add or subtract: calculation steps">
-          <li class="trace-hint">date ± years, months (clamped to month end) → ± weeks, days = result</li>
-        </ul>
-        <div class="live-result" id="addLiveResult">→ —</div>
+          <div class="input-row">
+            <label for="addStart">Start date</label>
+            <div class="date-row">
+              <input class="date-input date-empty" type="date" id="addStart" min="0001-01-01" max="9999-12-31" placeholder="YYYY-MM-DD">
+              <button class="today-btn" id="addStartTodayBtn" type="button" data-target="addStart" aria-label="Set start date to today">today</button>
+            </div>
+          </div>
+
+          <div class="amount-grid">
+            <div class="input-row">
+              <label for="addYears" id="addYearsLabel">Years</label>
+              <input type="text" inputmode="numeric" id="addYears" placeholder="0" autocomplete="off" spellcheck="false" maxlength="16">
+            </div>
+            <div class="input-row">
+              <label for="addMonths" id="addMonthsLabel">Months</label>
+              <input type="text" inputmode="numeric" id="addMonths" placeholder="0" autocomplete="off" spellcheck="false" maxlength="16">
+            </div>
+            <div class="input-row">
+              <label for="addWeeks" id="addWeeksLabel">Weeks</label>
+              <input type="text" inputmode="numeric" id="addWeeks" placeholder="0" autocomplete="off" spellcheck="false" maxlength="16">
+            </div>
+            <div class="input-row">
+              <label for="addDays" id="addDaysLabel">Days</label>
+              <input type="text" inputmode="numeric" id="addDays" placeholder="0" autocomplete="off" spellcheck="false" maxlength="16">
+            </div>
+          </div>
+
+          <label class="check-row" for="addBusiness">
+            <input class="settings-checkbox" type="checkbox" id="addBusiness" aria-describedby="addBusinessNote">
+            <span>count days as business days</span>
+          </label>
+          <div class="business-note hidden" id="addBusinessNote">Years and months step on the calendar first; then weeks count as business weeks (weeks × working days per week), then business days.</div>
+          <div class="calendar-summary hidden" id="addCalendarSummary">
+            <span class="calendar-summary-text" id="addCalendarSummaryText">Sat/Sun · no holidays</span>
+            <button class="link-btn" id="addCalendarEditBtn" type="button">edit in settings</button>
+          </div>
+
+          <div class="button-group">
+            <button class="calc-btn" id="calcAddBtn" type="button">calculate</button>
+            <button class="reset-btn" id="resetAddBtn" type="button">clear</button>
+            <button class="copy-btn" id="copyAddBtn" type="button">copy</button>
+          </div>
+
+          <div class="result" id="addResult" role="status" aria-live="polite">—</div>
+        </div>
+
+        <div class="right-panel">
+          <div class="formula-title">live formula</div>
+          <ul class="trace live-formula" id="addTrace" aria-label="Add or subtract: calculation steps">
+            <li class="trace-hint">date ± years, months (clamped to month end) → ± weeks, days = result</li>
+          </ul>
+          <div class="live-result" id="addLiveResult">→ —</div>
+        </div>
       </div>
     </div>
   </div>
 
   <!-- 3. Business Days -->
-  <div class="calc-section" id="card-business">
-    <div class="calc-grid">
-      <div class="left-panel">
+  <div class="calc-section" id="card-business" data-calc="business">
+    <div class="calc-card-header">
+      <button class="drag-handle" type="button" aria-label="Move Business Days" aria-describedby="cardMoveHint" title="Drag to reorder">⠿</button>
+      <div class="calc-card-heading">
         <div class="section-title" id="bizTitle">Business Days</div>
         <div class="section-subtitle">Counts working days between two dates, skipping the weekend and the holidays chosen in settings. The earlier date is always counted.</div>
-
-        <div class="input-row">
-          <label for="bizStart">Start date</label>
-          <div class="date-row">
-            <input class="date-input date-empty" type="date" id="bizStart" min="0001-01-01" max="9999-12-31" placeholder="YYYY-MM-DD">
-            <button class="today-btn" id="bizStartTodayBtn" type="button" data-target="bizStart" aria-label="Set start date to today">today</button>
-          </div>
-        </div>
-        <div class="swap-row">
-          <button class="swap-btn" id="swapBizBtn" type="button" title="Swap start and end dates">⇅ swap dates</button>
-        </div>
-        <div class="input-row">
-          <label for="bizEnd">End date</label>
-          <div class="date-row">
-            <input class="date-input date-empty" type="date" id="bizEnd" min="0001-01-01" max="9999-12-31" placeholder="YYYY-MM-DD">
-            <button class="today-btn" id="bizEndTodayBtn" type="button" data-target="bizEnd" aria-label="Set end date to today">today</button>
-          </div>
-        </div>
-        <label class="check-row" for="bizIncludeEnd">
-          <input class="settings-checkbox" type="checkbox" id="bizIncludeEnd">
-          <span>include the later date</span>
-        </label>
-        <div class="calendar-summary" id="bizCalendarSummary">
-          <span class="calendar-summary-text" id="bizCalendarSummaryText">Sat/Sun · no holidays</span>
-          <button class="link-btn" id="bizCalendarEditBtn" type="button">edit in settings</button>
-        </div>
-
-        <div class="button-group">
-          <button class="calc-btn" id="calcBizBtn" type="button">calculate</button>
-          <button class="reset-btn" id="resetBizBtn" type="button">clear</button>
-          <button class="copy-btn" id="copyBizBtn" type="button">copy</button>
-        </div>
-
-        <div class="result" id="bizResult" role="status" aria-live="polite">—</div>
       </div>
+      <button class="collapse-btn" type="button" aria-expanded="true" aria-controls="card-business-body" aria-label="Collapse Business Days">[ − ]</button>
+    </div>
+    <div class="calc-card-body" id="card-business-body">
+      <div class="calc-grid">
+        <div class="left-panel">
+          <div class="input-row">
+            <label for="bizStart">Start date</label>
+            <div class="date-row">
+              <input class="date-input date-empty" type="date" id="bizStart" min="0001-01-01" max="9999-12-31" placeholder="YYYY-MM-DD">
+              <button class="today-btn" id="bizStartTodayBtn" type="button" data-target="bizStart" aria-label="Set start date to today">today</button>
+            </div>
+          </div>
+          <div class="swap-row">
+            <button class="swap-btn" id="swapBizBtn" type="button" title="Swap start and end dates">⇅ swap dates</button>
+          </div>
+          <div class="input-row">
+            <label for="bizEnd">End date</label>
+            <div class="date-row">
+              <input class="date-input date-empty" type="date" id="bizEnd" min="0001-01-01" max="9999-12-31" placeholder="YYYY-MM-DD">
+              <button class="today-btn" id="bizEndTodayBtn" type="button" data-target="bizEnd" aria-label="Set end date to today">today</button>
+            </div>
+          </div>
+          <label class="check-row" for="bizIncludeEnd">
+            <input class="settings-checkbox" type="checkbox" id="bizIncludeEnd">
+            <span>include the later date</span>
+          </label>
+          <div class="calendar-summary" id="bizCalendarSummary">
+            <span class="calendar-summary-text" id="bizCalendarSummaryText">Sat/Sun · no holidays</span>
+            <button class="link-btn" id="bizCalendarEditBtn" type="button">edit in settings</button>
+          </div>
 
-      <div class="right-panel">
-        <div class="formula-title">live formula</div>
-        <ul class="trace live-formula" id="bizTrace" aria-label="Business days: calculation steps">
-          <li class="trace-hint">calendar days − weekend days − holidays = business days</li>
-        </ul>
-        <div class="live-result" id="bizLiveResult">→ —</div>
+          <div class="button-group">
+            <button class="calc-btn" id="calcBizBtn" type="button">calculate</button>
+            <button class="reset-btn" id="resetBizBtn" type="button">clear</button>
+            <button class="copy-btn" id="copyBizBtn" type="button">copy</button>
+          </div>
 
-        <div class="mini-cal" id="bizCal">
-          <fieldset class="cal-pick" id="bizCalPick">
-            <legend class="cal-pick-legend">Calendar click sets</legend>
-            <label class="cal-pick-opt" for="bizPickStart"><input type="radio" name="bizPick" id="bizPickStart" value="start" checked><span>start</span></label>
-            <label class="cal-pick-opt" for="bizPickEnd"><input type="radio" name="bizPick" id="bizPickEnd" value="end"><span>end</span></label>
-          </fieldset>
-          <div class="cal-pick-hint" id="bizCalHint" role="status" aria-live="polite">Next click sets the start date.</div>
-          <div class="mini-cal-head">
-            <button class="mini-cal-nav" id="bizCalPrevBtn" type="button" aria-label="Previous month" aria-controls="bizCalGrid">‹</button>
-            <div class="mini-cal-title" id="bizCalTitle" aria-live="polite">—</div>
-            <button class="mini-cal-nav" id="bizCalNextBtn" type="button" aria-label="Next month" aria-controls="bizCalGrid">›</button>
-            <button class="mini-cal-nav mini-cal-today" id="bizCalTodayBtn" type="button" aria-label="today, show the current month" aria-controls="bizCalGrid">today</button>
-          </div>
-          <div class="mini-cal-weekdays" id="bizCalWeekdays" aria-hidden="true">
-            <span class="mini-cal-dow">Mon</span><span class="mini-cal-dow">Tue</span><span class="mini-cal-dow">Wed</span><span class="mini-cal-dow">Thu</span><span class="mini-cal-dow">Fri</span><span class="mini-cal-dow weekend">Sat</span><span class="mini-cal-dow weekend">Sun</span>
-          </div>
-          <div class="mini-cal-grid" id="bizCalGrid" role="group" aria-labelledby="bizCalTitle"></div>
-          <div class="mini-cal-legend" aria-hidden="true">
-            <span class="legend-item"><span class="legend-swatch swatch-endpoint"></span>start / end</span>
-            <span class="legend-item"><span class="legend-swatch swatch-range"></span>in range</span>
-            <span class="legend-item"><span class="legend-swatch swatch-weekend"></span>weekend</span>
-            <span class="legend-item"><span class="legend-swatch swatch-holiday"></span>holiday</span>
-            <span class="legend-item"><span class="legend-mark">~</span>estimated</span>
-            <span class="legend-item"><span class="legend-swatch swatch-today"></span>today</span>
-          </div>
+          <div class="result" id="bizResult" role="status" aria-live="polite">—</div>
         </div>
 
-        <div class="holiday-hits hidden" id="bizHolidayHits">
-          <div class="holiday-hits-title">holidays in range</div>
-          <ul class="holiday-hit-list" id="bizHolidayList" aria-label="Holidays in range"></ul>
-          <div class="holiday-hit-more hidden" id="bizHolidayMore"></div>
+        <div class="right-panel">
+          <div class="formula-title">live formula</div>
+          <ul class="trace live-formula" id="bizTrace" aria-label="Business days: calculation steps">
+            <li class="trace-hint">calendar days − weekend days − holidays = business days</li>
+          </ul>
+          <div class="live-result" id="bizLiveResult">→ —</div>
+
+          <div class="mini-cal" id="bizCal">
+            <fieldset class="cal-pick" id="bizCalPick">
+              <legend class="cal-pick-legend">Calendar click sets</legend>
+              <label class="cal-pick-opt" for="bizPickStart"><input type="radio" name="bizPick" id="bizPickStart" value="start" checked><span>start</span></label>
+              <label class="cal-pick-opt" for="bizPickEnd"><input type="radio" name="bizPick" id="bizPickEnd" value="end"><span>end</span></label>
+            </fieldset>
+            <div class="cal-pick-hint" id="bizCalHint" role="status" aria-live="polite">Next click sets the start date.</div>
+            <div class="mini-cal-head">
+              <button class="mini-cal-nav" id="bizCalPrevBtn" type="button" aria-label="Previous month" aria-controls="bizCalGrid">‹</button>
+              <div class="mini-cal-title" id="bizCalTitle" aria-live="polite">—</div>
+              <button class="mini-cal-nav" id="bizCalNextBtn" type="button" aria-label="Next month" aria-controls="bizCalGrid">›</button>
+              <button class="mini-cal-nav mini-cal-today" id="bizCalTodayBtn" type="button" aria-label="today, show the current month" aria-controls="bizCalGrid">today</button>
+            </div>
+            <div class="mini-cal-weekdays" id="bizCalWeekdays" aria-hidden="true">
+              <span class="mini-cal-dow">Mon</span><span class="mini-cal-dow">Tue</span><span class="mini-cal-dow">Wed</span><span class="mini-cal-dow">Thu</span><span class="mini-cal-dow">Fri</span><span class="mini-cal-dow weekend">Sat</span><span class="mini-cal-dow weekend">Sun</span>
+            </div>
+            <div class="mini-cal-grid" id="bizCalGrid" role="group" aria-labelledby="bizCalTitle"></div>
+            <div class="mini-cal-legend" aria-hidden="true">
+              <span class="legend-item"><span class="legend-swatch swatch-endpoint"></span>start / end</span>
+              <span class="legend-item"><span class="legend-swatch swatch-range"></span>in range</span>
+              <span class="legend-item"><span class="legend-swatch swatch-weekend"></span>weekend</span>
+              <span class="legend-item"><span class="legend-swatch swatch-holiday"></span>holiday</span>
+              <span class="legend-item"><span class="legend-mark">~</span>estimated</span>
+              <span class="legend-item"><span class="legend-swatch swatch-today"></span>today</span>
+            </div>
+          </div>
+
+          <div class="holiday-hits hidden" id="bizHolidayHits">
+            <div class="holiday-hits-title">holidays in range</div>
+            <ul class="holiday-hit-list" id="bizHolidayList" aria-label="Holidays in range"></ul>
+            <div class="holiday-hit-more hidden" id="bizHolidayMore"></div>
+          </div>
         </div>
       </div>
     </div>
   </div>
 
   <!-- 4. Age -->
-  <div class="calc-section" id="card-age">
-    <div class="calc-grid">
-      <div class="left-panel">
+  <div class="calc-section" id="card-age" data-calc="age">
+    <div class="calc-card-header">
+      <button class="drag-handle" type="button" aria-label="Move Age" aria-describedby="cardMoveHint" title="Drag to reorder">⠿</button>
+      <div class="calc-card-heading">
         <div class="section-title" id="ageTitle">Age</div>
         <div class="section-subtitle">Exact age in years, months and days, with totals and the next birthday.</div>
-
-        <div class="input-row">
-          <label for="ageBirth">Birth date</label>
-          <input class="date-input date-empty" type="date" id="ageBirth" min="0001-01-01" max="9999-12-31" placeholder="YYYY-MM-DD">
-        </div>
-        <div class="input-row">
-          <label for="ageAsOf">As of (empty = today)</label>
-          <div class="date-row">
-            <input class="date-input date-empty" type="date" id="ageAsOf" min="0001-01-01" max="9999-12-31" placeholder="YYYY-MM-DD" aria-describedby="ageAsOfHint">
-            <button class="today-btn" id="ageAsOfTodayBtn" type="button" data-target="ageAsOf" aria-label="Set as-of date to today">today</button>
-          </div>
-          <div class="field-hint" id="ageAsOfHint">empty = today</div>
-        </div>
-        <div class="toggle-row">
-          <span class="toggle-row-label" id="ageLeapLabel">Feb 29 birthdays in common years</span>
-          <div class="mode-toggle" role="group" aria-labelledby="ageLeapLabel">
-            <button class="mode-btn active" id="ageLeapFeb28Btn" data-rule="feb28" type="button" aria-pressed="true">Feb 28</button>
-            <button class="mode-btn" id="ageLeapMar1Btn" data-rule="mar1" type="button" aria-pressed="false">Mar 1</button>
-          </div>
-        </div>
-
-        <div class="button-group">
-          <button class="calc-btn" id="calcAgeBtn" type="button">calculate</button>
-          <button class="reset-btn" id="resetAgeBtn" type="button">clear</button>
-          <button class="copy-btn" id="copyAgeBtn" type="button">copy</button>
-        </div>
-
-        <div class="result" id="ageResult" role="status" aria-live="polite">—</div>
       </div>
+      <button class="collapse-btn" type="button" aria-expanded="true" aria-controls="card-age-body" aria-label="Collapse Age">[ − ]</button>
+    </div>
+    <div class="calc-card-body" id="card-age-body">
+      <div class="calc-grid">
+        <div class="left-panel">
+          <div class="input-row">
+            <label for="ageBirth">Birth date</label>
+            <input class="date-input date-empty" type="date" id="ageBirth" min="0001-01-01" max="9999-12-31" placeholder="YYYY-MM-DD">
+          </div>
+          <div class="input-row">
+            <label for="ageAsOf">As of (empty = today)</label>
+            <div class="date-row">
+              <input class="date-input date-empty" type="date" id="ageAsOf" min="0001-01-01" max="9999-12-31" placeholder="YYYY-MM-DD" aria-describedby="ageAsOfHint">
+              <button class="today-btn" id="ageAsOfTodayBtn" type="button" data-target="ageAsOf" aria-label="Set as-of date to today">today</button>
+            </div>
+            <div class="field-hint" id="ageAsOfHint">empty = today</div>
+          </div>
+          <div class="toggle-row">
+            <span class="toggle-row-label" id="ageLeapLabel">Feb 29 birthdays in common years</span>
+            <div class="mode-toggle" role="group" aria-labelledby="ageLeapLabel">
+              <button class="mode-btn active" id="ageLeapFeb28Btn" data-rule="feb28" type="button" aria-pressed="true">Feb 28</button>
+              <button class="mode-btn" id="ageLeapMar1Btn" data-rule="mar1" type="button" aria-pressed="false">Mar 1</button>
+            </div>
+          </div>
 
-      <div class="right-panel">
-        <div class="formula-title">live formula</div>
-        <ul class="trace live-formula" id="ageTrace" aria-label="Age: calculation steps">
-          <li class="trace-hint">birth + years → + months → + days = as of</li>
-        </ul>
-        <div class="live-result" id="ageLiveResult">→ —</div>
+          <div class="button-group">
+            <button class="calc-btn" id="calcAgeBtn" type="button">calculate</button>
+            <button class="reset-btn" id="resetAgeBtn" type="button">clear</button>
+            <button class="copy-btn" id="copyAgeBtn" type="button">copy</button>
+          </div>
+
+          <div class="result" id="ageResult" role="status" aria-live="polite">—</div>
+        </div>
+
+        <div class="right-panel">
+          <div class="formula-title">live formula</div>
+          <ul class="trace live-formula" id="ageTrace" aria-label="Age: calculation steps">
+            <li class="trace-hint">birth + years → + months → + days = as of</li>
+          </ul>
+          <div class="live-result" id="ageLiveResult">→ —</div>
+        </div>
       </div>
     </div>
   </div>
 
   <!-- 5. Date Info -->
-  <div class="calc-section" id="card-info">
-    <div class="calc-grid">
-      <div class="left-panel">
+  <div class="calc-section" id="card-info" data-calc="info">
+    <div class="calc-card-header">
+      <button class="drag-handle" type="button" aria-label="Move Date Info" aria-describedby="cardMoveHint" title="Drag to reorder">⠿</button>
+      <div class="calc-card-heading">
         <div class="section-title" id="infoTitle">Date Info</div>
         <div class="section-subtitle">Weekday, ISO week, day of the year, quarter, leap year and days left for any date.</div>
-
-        <div class="input-row">
-          <label for="infoDate">Date</label>
-          <div class="date-row">
-            <input class="date-input date-empty" type="date" id="infoDate" min="0001-01-01" max="9999-12-31" placeholder="YYYY-MM-DD">
-            <button class="today-btn" id="infoDateTodayBtn" type="button" data-target="infoDate" aria-label="Set date to today">today</button>
-          </div>
-        </div>
-
-        <div class="button-group">
-          <button class="calc-btn" id="calcInfoBtn" type="button">calculate</button>
-          <button class="reset-btn" id="resetInfoBtn" type="button">clear</button>
-          <button class="copy-btn" id="copyInfoBtn" type="button">copy</button>
-        </div>
-
-        <div class="result" id="infoResult" role="status" aria-live="polite">—</div>
       </div>
-
-      <div class="right-panel">
-        <div class="formula-title">live formula</div>
-        <ul class="trace live-formula" id="infoTrace" aria-label="Date info: calculation steps">
-          <li class="trace-hint">weekday · ISO week · day of year · quarter · days left</li>
-        </ul>
-        <div class="live-result" id="infoLiveResult">→ —</div>
-
-        <div class="mini-cal" id="infoCal">
-          <div class="mini-cal-head">
-            <button class="mini-cal-nav" id="infoCalPrevBtn" type="button" aria-label="Previous month" aria-controls="infoCalGrid">‹</button>
-            <div class="mini-cal-title" id="infoCalTitle" aria-live="polite">—</div>
-            <button class="mini-cal-nav" id="infoCalNextBtn" type="button" aria-label="Next month" aria-controls="infoCalGrid">›</button>
-            <button class="mini-cal-nav mini-cal-today" id="infoCalTodayBtn" type="button" aria-label="today, show the current month" aria-controls="infoCalGrid">today</button>
+      <button class="collapse-btn" type="button" aria-expanded="true" aria-controls="card-info-body" aria-label="Collapse Date Info">[ − ]</button>
+    </div>
+    <div class="calc-card-body" id="card-info-body">
+      <div class="calc-grid">
+        <div class="left-panel">
+          <div class="input-row">
+            <label for="infoDate">Date</label>
+            <div class="date-row">
+              <input class="date-input date-empty" type="date" id="infoDate" min="0001-01-01" max="9999-12-31" placeholder="YYYY-MM-DD">
+              <button class="today-btn" id="infoDateTodayBtn" type="button" data-target="infoDate" aria-label="Set date to today">today</button>
+            </div>
           </div>
-          <div class="mini-cal-weekdays" id="infoCalWeekdays" aria-hidden="true">
-            <span class="mini-cal-dow">Mon</span><span class="mini-cal-dow">Tue</span><span class="mini-cal-dow">Wed</span><span class="mini-cal-dow">Thu</span><span class="mini-cal-dow">Fri</span><span class="mini-cal-dow weekend">Sat</span><span class="mini-cal-dow weekend">Sun</span>
+
+          <div class="button-group">
+            <button class="calc-btn" id="calcInfoBtn" type="button">calculate</button>
+            <button class="reset-btn" id="resetInfoBtn" type="button">clear</button>
+            <button class="copy-btn" id="copyInfoBtn" type="button">copy</button>
           </div>
-          <div class="mini-cal-grid" id="infoCalGrid" role="group" aria-labelledby="infoCalTitle"></div>
-          <div class="mini-cal-legend" aria-hidden="true">
-            <span class="legend-item"><span class="legend-swatch swatch-endpoint"></span>selected</span>
-            <span class="legend-item"><span class="legend-swatch swatch-weekend"></span>weekend</span>
-            <span class="legend-item"><span class="legend-swatch swatch-holiday"></span>holiday</span>
-            <span class="legend-item"><span class="legend-mark">~</span>estimated</span>
-            <span class="legend-item"><span class="legend-swatch swatch-today"></span>today</span>
+
+          <div class="result" id="infoResult" role="status" aria-live="polite">—</div>
+        </div>
+
+        <div class="right-panel">
+          <div class="formula-title">live formula</div>
+          <ul class="trace live-formula" id="infoTrace" aria-label="Date info: calculation steps">
+            <li class="trace-hint">weekday · ISO week · day of year · quarter · days left</li>
+          </ul>
+          <div class="live-result" id="infoLiveResult">→ —</div>
+
+          <div class="mini-cal" id="infoCal">
+            <div class="mini-cal-head">
+              <button class="mini-cal-nav" id="infoCalPrevBtn" type="button" aria-label="Previous month" aria-controls="infoCalGrid">‹</button>
+              <div class="mini-cal-title" id="infoCalTitle" aria-live="polite">—</div>
+              <button class="mini-cal-nav" id="infoCalNextBtn" type="button" aria-label="Next month" aria-controls="infoCalGrid">›</button>
+              <button class="mini-cal-nav mini-cal-today" id="infoCalTodayBtn" type="button" aria-label="today, show the current month" aria-controls="infoCalGrid">today</button>
+            </div>
+            <div class="mini-cal-weekdays" id="infoCalWeekdays" aria-hidden="true">
+              <span class="mini-cal-dow">Mon</span><span class="mini-cal-dow">Tue</span><span class="mini-cal-dow">Wed</span><span class="mini-cal-dow">Thu</span><span class="mini-cal-dow">Fri</span><span class="mini-cal-dow weekend">Sat</span><span class="mini-cal-dow weekend">Sun</span>
+            </div>
+            <div class="mini-cal-grid" id="infoCalGrid" role="group" aria-labelledby="infoCalTitle"></div>
+            <div class="mini-cal-legend" aria-hidden="true">
+              <span class="legend-item"><span class="legend-swatch swatch-endpoint"></span>selected</span>
+              <span class="legend-item"><span class="legend-swatch swatch-weekend"></span>weekend</span>
+              <span class="legend-item"><span class="legend-swatch swatch-holiday"></span>holiday</span>
+              <span class="legend-item"><span class="legend-mark">~</span>estimated</span>
+              <span class="legend-item"><span class="legend-swatch swatch-today"></span>today</span>
+            </div>
           </div>
         </div>
       </div>
@@ -2643,73 +2880,81 @@ label {
   </div>
 
   <!-- 6. Countdown -->
-  <div class="calc-section" id="card-countdown">
-    <div class="calc-grid">
-      <div class="left-panel">
+  <div class="calc-section" id="card-countdown" data-calc="countdown">
+    <div class="calc-card-header">
+      <button class="drag-handle" type="button" aria-label="Move Countdown" aria-describedby="cardMoveHint" title="Drag to reorder">⠿</button>
+      <div class="calc-card-heading">
         <div class="section-title" id="cdTitle">Countdown</div>
         <div class="section-subtitle">Live time left until a date (and optional time) on this device's clock, or time elapsed since it.</div>
-
-        <div class="input-row">
-          <label for="cdTarget">Target date</label>
-          <div class="date-row">
-            <input class="date-input date-empty" type="date" id="cdTarget" min="0001-01-01" max="9999-12-31" placeholder="YYYY-MM-DD">
-            <button class="today-btn" id="cdTargetTodayBtn" type="button" data-target="cdTarget" aria-label="Set target date to today">today</button>
-          </div>
-          <div class="quick-pills" role="group" aria-label="Quick targets">
-            <button class="quick-pill" id="cdQuickNewYearBtn" data-quick="newYear" type="button">new year</button>
-            <button class="quick-pill" id="cdQuick30Btn" data-quick="plus30" type="button">+30d</button>
-            <button class="quick-pill" id="cdQuick100Btn" data-quick="plus100" type="button">+100d</button>
-          </div>
-        </div>
-        <div class="input-row">
-          <label for="cdTime">Target time (optional, local)</label>
-          <input class="date-input date-empty" type="time" id="cdTime" step="60" placeholder="HH:MM">
-        </div>
-        <div class="cd-saved-note hidden" id="cdSavedNote">
-          <span class="cd-saved-note-text" id="cdSavedNoteText">Saved on this device. It resumes when you reopen the app.</span>
-          <button class="link-btn" id="cdForgetBtn" type="button" aria-label="Forget the saved countdown">Forget</button>
-        </div>
-
-        <div class="button-group">
-          <button class="calc-btn" id="calcCdBtn" type="button">calculate</button>
-          <button class="reset-btn" id="resetCdBtn" type="button">clear</button>
-          <button class="copy-btn" id="copyCdBtn" type="button">copy</button>
-        </div>
-
-        <div class="result" id="cdResult" role="status" aria-live="polite">—</div>
       </div>
-
-      <div class="right-panel">
-        <div class="formula-title">live formula</div>
-        <div class="cd-phase-row"><span class="cd-phase hidden" id="cdPhase" aria-hidden="true"></span></div>
-        <div class="countdown-big" id="cdClock" role="timer" aria-labelledby="cdTitle">—</div>
-        <div class="countdown-status" id="cdStatus" role="status" aria-live="polite">Pick a target date to start the countdown.</div>
-        <ul class="trace live-formula" id="cdTrace" aria-label="Countdown: calculation steps">
-          <li class="trace-hint">target − now = days, hours, minutes, seconds</li>
-        </ul>
-        <div class="live-result" id="cdLiveResult">→ —</div>
-
-        <div class="mini-cal" id="cdCal">
-          <div class="mini-cal-head">
-            <button class="mini-cal-nav" id="cdCalPrevBtn" type="button" aria-label="Previous month" aria-controls="cdCalGrid">‹</button>
-            <div class="mini-cal-title" id="cdCalTitle" aria-live="polite">—</div>
-            <button class="mini-cal-nav" id="cdCalNextBtn" type="button" aria-label="Next month" aria-controls="cdCalGrid">›</button>
-            <button class="mini-cal-nav mini-cal-today" id="cdCalTodayBtn" type="button" aria-label="today, show the current month" aria-controls="cdCalGrid">today</button>
+      <button class="collapse-btn" type="button" aria-expanded="true" aria-controls="card-countdown-body" aria-label="Collapse Countdown">[ − ]</button>
+    </div>
+    <div class="calc-card-body" id="card-countdown-body">
+      <div class="calc-grid">
+        <div class="left-panel">
+          <div class="input-row">
+            <label for="cdTarget">Target date</label>
+            <div class="date-row">
+              <input class="date-input date-empty" type="date" id="cdTarget" min="0001-01-01" max="9999-12-31" placeholder="YYYY-MM-DD">
+              <button class="today-btn" id="cdTargetTodayBtn" type="button" data-target="cdTarget" aria-label="Set target date to today">today</button>
+            </div>
+            <div class="quick-pills" role="group" aria-label="Quick targets">
+              <button class="quick-pill" id="cdQuickNewYearBtn" data-quick="newYear" type="button">new year</button>
+              <button class="quick-pill" id="cdQuick30Btn" data-quick="plus30" type="button">+30d</button>
+              <button class="quick-pill" id="cdQuick100Btn" data-quick="plus100" type="button">+100d</button>
+            </div>
           </div>
-          <div class="mini-cal-weekdays" id="cdCalWeekdays" aria-hidden="true">
-            <span class="mini-cal-dow">Mon</span><span class="mini-cal-dow">Tue</span><span class="mini-cal-dow">Wed</span><span class="mini-cal-dow">Thu</span><span class="mini-cal-dow">Fri</span><span class="mini-cal-dow weekend">Sat</span><span class="mini-cal-dow weekend">Sun</span>
+          <div class="input-row">
+            <label for="cdTime">Target time (optional, local)</label>
+            <input class="date-input date-empty" type="time" id="cdTime" step="60" placeholder="HH:MM">
           </div>
-          <div class="mini-cal-grid" id="cdCalGrid" role="group" aria-labelledby="cdCalTitle"></div>
-          <div class="mini-cal-legend" aria-hidden="true">
-            <span class="legend-item"><span class="legend-swatch swatch-endpoint"></span>target</span>
-            <span class="legend-item"><span class="legend-swatch swatch-weekend"></span>weekend</span>
-            <span class="legend-item"><span class="legend-swatch swatch-holiday"></span>holiday</span>
-            <span class="legend-item"><span class="legend-mark">~</span>estimated</span>
-            <span class="legend-item"><span class="legend-swatch swatch-today"></span>today</span>
+          <div class="cd-saved-note hidden" id="cdSavedNote">
+            <span class="cd-saved-note-text" id="cdSavedNoteText">Saved on this device. It resumes when you reopen the app.</span>
+            <button class="link-btn" id="cdForgetBtn" type="button" aria-label="Forget the saved countdown">Forget</button>
+          </div>
+
+          <div class="button-group">
+            <button class="calc-btn" id="calcCdBtn" type="button">calculate</button>
+            <button class="reset-btn" id="resetCdBtn" type="button">clear</button>
+            <button class="copy-btn" id="copyCdBtn" type="button">copy</button>
+          </div>
+
+          <div class="result" id="cdResult" role="status" aria-live="polite">—</div>
+        </div>
+
+        <div class="right-panel">
+          <div class="formula-title">live formula</div>
+          <div class="cd-phase-row"><span class="cd-phase hidden" id="cdPhase" aria-hidden="true"></span></div>
+          <div class="countdown-big" id="cdClock" role="timer" aria-labelledby="cdTitle">—</div>
+          <div class="countdown-status" id="cdStatus" role="status" aria-live="polite">Pick a target date to start the countdown.</div>
+          <ul class="trace live-formula" id="cdTrace" aria-label="Countdown: calculation steps">
+            <li class="trace-hint">target − now = days, hours, minutes, seconds</li>
+          </ul>
+          <div class="live-result" id="cdLiveResult">→ —</div>
+
+          <div class="mini-cal" id="cdCal">
+            <div class="mini-cal-head">
+              <button class="mini-cal-nav" id="cdCalPrevBtn" type="button" aria-label="Previous month" aria-controls="cdCalGrid">‹</button>
+              <div class="mini-cal-title" id="cdCalTitle" aria-live="polite">—</div>
+              <button class="mini-cal-nav" id="cdCalNextBtn" type="button" aria-label="Next month" aria-controls="cdCalGrid">›</button>
+              <button class="mini-cal-nav mini-cal-today" id="cdCalTodayBtn" type="button" aria-label="today, show the current month" aria-controls="cdCalGrid">today</button>
+            </div>
+            <div class="mini-cal-weekdays" id="cdCalWeekdays" aria-hidden="true">
+              <span class="mini-cal-dow">Mon</span><span class="mini-cal-dow">Tue</span><span class="mini-cal-dow">Wed</span><span class="mini-cal-dow">Thu</span><span class="mini-cal-dow">Fri</span><span class="mini-cal-dow weekend">Sat</span><span class="mini-cal-dow weekend">Sun</span>
+            </div>
+            <div class="mini-cal-grid" id="cdCalGrid" role="group" aria-labelledby="cdCalTitle"></div>
+            <div class="mini-cal-legend" aria-hidden="true">
+              <span class="legend-item"><span class="legend-swatch swatch-endpoint"></span>target</span>
+              <span class="legend-item"><span class="legend-swatch swatch-weekend"></span>weekend</span>
+              <span class="legend-item"><span class="legend-swatch swatch-holiday"></span>holiday</span>
+              <span class="legend-item"><span class="legend-mark">~</span>estimated</span>
+              <span class="legend-item"><span class="legend-swatch swatch-today"></span>today</span>
+            </div>
           </div>
         </div>
       </div>
     </div>
+  </div>
   </div>
 
   <div class="calc-section history-section" id="historySection">
@@ -2756,7 +3001,7 @@ label {
     </div>
   </div>
 
-  <footer>Mohamed Sayed · Ahmed Emara · built with Claude (Anthropic) · 2026 · <span id="appVersion">Mobile &amp; Web v1.1.0</span></footer>
+  <footer>Mohamed Sayed · Ahmed Emara · built with Claude (Anthropic) · 2026 · <span id="appVersion">Mobile &amp; Web v1.2.0</span></footer>
 </div>
 
 <div class="modal-backdrop hidden" id="aboutModal" role="dialog" aria-modal="true" aria-labelledby="aboutModalTitle">
@@ -2770,7 +3015,7 @@ label {
       <div class="about-icon-badge" aria-hidden="true">31</div>
       <div>
         <div class="about-app-name" id="aboutAppName">Date Calculator Tool</div>
-        <div class="about-version-pill" id="aboutVersionPill">Mobile &amp; Web v1.1.0 · Offline HTML / PWA</div>
+        <div class="about-version-pill" id="aboutVersionPill">Mobile &amp; Web v1.2.0 · Offline HTML / PWA</div>
       </div>
     </div>
 
@@ -2974,6 +3219,14 @@ label {
         </select>
       </div>
       <div class="update-status-text" id="calendarStatusText" role="status" aria-live="polite">Sat/Sun · no holidays</div>
+    </div>
+
+    <div class="about-box">
+      <div class="about-box-title">LAYOUT</div>
+      <div class="settings-actions-row">
+        <button class="utility-btn" id="resetLayoutBtn" type="button">Reset card order &amp; expand all</button>
+      </div>
+      <div class="update-status-text" id="layoutStatusText" role="status" aria-live="polite">Card order and collapsed cards are saved on this device.</div>
     </div>
 
     <div class="modal-footer">
@@ -6345,7 +6598,7 @@ const HIJRI_OFFSET_MAX = 2;
 const HIJRI_YEAR_MIN = 1317;
 const HIJRI_YEAR_MAX = 1626;
 const ROLLOVER_CHECK_MS = 60000;
-const APP_VERSION = "1.1.0";
+const APP_VERSION = "1.2.0";
 const APP_NAME = "Date Calculator Tool";
 const WEB_APP_URL = "https://ciphervaults.github.io/Date-Calculator-Tool/";
 const RELEASE_URL =
@@ -6362,12 +6615,14 @@ const UPDATE_MAX_BYTES = 65536;
 const HISTORY_STORAGE_KEY = "date_tool_history_v1";
 const SETTINGS_STORAGE_KEY = "date_tool_settings_v1";
 const COUNTDOWN_STORAGE_KEY = "date_tool_countdown_v1";
+const LAYOUT_STORAGE_KEY = "date_tool_layout_v1";
 const BACKUP_KEY_SUFFIX = "_bak";
 const HISTORY_LIMIT = 500;
 // The desktop file caps (commands.rs), applied to the stored JSON text.
 const HISTORY_MAX_BYTES = 1024 * 1024;
 const SETTINGS_MAX_BYTES = 64 * 1024;
 const COUNTDOWN_MAX_BYTES = 1024;
+const LAYOUT_MAX_BYTES = 1024;
 const BACKUP_MAX_BYTES = 1024 * 1024;
 const SETTINGS_SCHEMA_VERSION = 1;
 // date_core::api::MAX_REQUEST_BYTES (the desktop's IPC request cap).
@@ -6967,6 +7222,96 @@ function countdownClear() {
   storageRemove(COUNTDOWN_STORAGE_KEY);
 }
 
+// ----- Card layout (layout_load / layout_save / layout_reset, A8)
+
+// commands.rs LayoutState: exactly these keys (deny_unknown_fields), each of
+// the six cards once in cardOrder, and unique valid keys in collapsedCards.
+const LAYOUT_RECORD_KEYS = ["schemaVersion", "cardOrder", "collapsedCards"];
+const LAYOUT_RECORD_CARDS = ["between", "add", "business", "age", "info", "countdown"];
+const LAYOUT_RECORD_SCHEMA_VERSION = 1;
+
+// commands.rs validate_layout_state. Every key is required.
+function parseLayoutRecord(value) {
+  if (!isPlainObject(value) || !hasOnlyKeys(value, LAYOUT_RECORD_KEYS)) return null;
+  if (!LAYOUT_RECORD_KEYS.every((k) => Object.hasOwn(value, k))) return null;
+  if (value.schemaVersion !== LAYOUT_RECORD_SCHEMA_VERSION) return null;
+  const { cardOrder, collapsedCards } = value;
+  if (!Array.isArray(cardOrder) || cardOrder.length !== LAYOUT_RECORD_CARDS.length) return null;
+  if (!cardOrder.every((k) => LAYOUT_RECORD_CARDS.includes(k))) return null;
+  if (new Set(cardOrder).size !== cardOrder.length) return null;
+  if (!Array.isArray(collapsedCards) || collapsedCards.length > LAYOUT_RECORD_CARDS.length) {
+    return null;
+  }
+  if (!collapsedCards.every((k) => LAYOUT_RECORD_CARDS.includes(k))) return null;
+  if (new Set(collapsedCards).size !== collapsedCards.length) return null;
+  return {
+    schemaVersion: LAYOUT_RECORD_SCHEMA_VERSION,
+    cardOrder: [...cardOrder],
+    collapsedCards: [...collapsedCards]
+  };
+}
+
+function storedLayoutIsNewer() {
+  const raw = storageGet(LAYOUT_STORAGE_KEY);
+  if (raw === null || utf8Length(raw) > BACKUP_MAX_BYTES) return false;
+  try {
+    return declaresNewerSchema(JSON.parse(raw), LAYOUT_RECORD_SCHEMA_VERSION);
+  } catch {
+    return false;
+  }
+}
+
+// commands.rs load_layout_from_path, with the countdown's rules:
+// `schemaVersion` is read from the raw value first, and a newer record is
+// ignored and never written or backed up. Anything else invalid (a value
+// over the 1,024-character cap included) is copied once to `_bak` and
+// reported as "corrupt" with no state, so the default layout is used.
+function layoutLoad() {
+  const raw = storageGet(LAYOUT_STORAGE_KEY);
+  if (raw === null) return { state: null, status: "empty" };
+  if (storedLayoutIsNewer()) return { state: null, status: "newer" };
+  let state = null;
+  if (utf8Length(raw) <= LAYOUT_MAX_BYTES) {
+    try {
+      state = parseLayoutRecord(JSON.parse(raw));
+    } catch {
+      state = null;
+    }
+  }
+  if (state) return { state, status: "ok" };
+  backupCorruptValueOnce(LAYOUT_STORAGE_KEY, raw);
+  return { state: null, status: "corrupt" };
+}
+
+function layoutSave(value) {
+  const state = parseLayoutRecord(value);
+  if (!state) throw new Error("invalid layout state");
+  const text = JSON.stringify(state);
+  if (utf8Length(text) > LAYOUT_MAX_BYTES) {
+    throw new Error("serialized layout exceeds max allowed size");
+  }
+  if (storedLayoutIsNewer()) throw new Error("layout_newer_schema");
+  const previousText = memoryStore.has(LAYOUT_STORAGE_KEY)
+    ? memoryStore.get(LAYOUT_STORAGE_KEY)
+    : null;
+  if (!storageSet(LAYOUT_STORAGE_KEY, text)) {
+    if (previousText === null) memoryStore.delete(LAYOUT_STORAGE_KEY);
+    else memoryStore.set(LAYOUT_STORAGE_KEY, previousText);
+    throw new Error("Failed to save the card layout on this device.");
+  }
+}
+
+// Settings → Layout → "Reset card order & expand all": writes the default
+// record (the plan A8 order, every card expanded), refused like a save when
+// a newer-version record is stored.
+function layoutReset() {
+  layoutSave({
+    schemaVersion: LAYOUT_RECORD_SCHEMA_VERSION,
+    cardOrder: [...LAYOUT_RECORD_CARDS],
+    collapsedCards: []
+  });
+}
+
 // ----- Settings (get_settings / set_settings)
 
 let storedSettings = null;
@@ -7087,7 +7432,7 @@ function str(value) {
 }
 
 // ---------------------------------------------------------------------------
-// Shared UI text (v1.1.0). mobile/index.html carries a byte-identical copy of
+// Shared UI text (v1.2.0). mobile/index.html carries a byte-identical copy of
 // this table (cross-surface-text): change both together.
 // ---------------------------------------------------------------------------
 
@@ -7120,7 +7465,39 @@ const UI_TEXT = Object.freeze({
   historyReasonTooLarge: "The history file is larger than the size limit.",
   historyReasonCorrupt: "The history file is damaged or has entries that cannot be read.",
   historyReasonNewer: "The history file is from a newer version of the app.",
-  historyResetFailed: "A new history could not be started. Try again."
+  historyResetFailed: "A new history could not be started. Try again.",
+  // v1.2.0 card layout (plan A8)
+  cardTitles: Object.freeze({
+    between: "Days Between Two Dates",
+    add: "Add / Subtract",
+    business: "Business Days",
+    age: "Age",
+    info: "Date Info",
+    countdown: "Countdown"
+  }),
+  layoutMove: (title) => `Move ${title}`,
+  layoutCollapse: (title) => `Collapse ${title}`,
+  layoutExpand: (title) => `Expand ${title}`,
+  layoutCollapseGlyph: "[ − ]",
+  layoutExpandGlyph: "[ + ]",
+  layoutDragTitle: "Drag to reorder",
+  layoutMoveHint:
+    "Drag to move this card, or tap or press it for Move up and Move down buttons. Arrow Up and Arrow Down also move it.",
+  layoutMoveUp: "Move up",
+  layoutMoveDown: "Move down",
+  layoutMoveDone: "Done",
+  layoutMoved: (title, position, total) => `Moved ${title} to position ${position} of ${total}.`,
+  layoutResetButton: "Reset card order & expand all",
+  layoutSavedNote: "Card order and collapsed cards are saved on this device.",
+  layoutResetNote: "Card order reset and every card expanded.",
+  layoutCorruptNote: "The saved card layout was damaged, so the default layout is used.",
+  layoutNewerNote:
+    "The saved card layout is from a newer version, so it is left untouched. Changes last for this session only.",
+  layoutUnreadableNote:
+    "The saved card layout could not be read, so it is left untouched. Changes last for this session only.",
+  layoutWriteFailedNote:
+    "The card layout could not be saved on this device. Changes last for this session only.",
+  layoutSessionNote: "Kept for this session only. This browser is not saving site data."
 });
 
 // ---------------------------------------------------------------------------
@@ -9231,6 +9608,8 @@ async function restoreHistoryEntry(entry) {
   const key = entry.calculator;
   const inputs = entry.inputs && typeof entry.inputs === "object" ? entry.inputs : {};
   const val = (k) => (typeof inputs[k] === "string" ? inputs[k] : "");
+  // A collapsed card opens for the restore (and that is saved).
+  expandCard(key);
 
   switch (key) {
     case "between":
@@ -9544,8 +9923,731 @@ function resetCard(key, { forget = true } = {}) {
 
 function clearAllCalculators() {
   const done = Promise.all(CARD_KEYS.map((key) => resetCard(key, { forget: false })));
-  $("betweenStart")?.focus();
+  firstFocusTarget()?.focus();
   return done;
+}
+
+// ---------------------------------------------------------------------------
+// Card layout (v1.2.0, plan A8; ported from Percentage Calculator Tool
+// v2.3.0): every card can be collapsed to its title row and moved by its
+// drag handle (pointer: mouse, pen, touch) or by ArrowUp/ArrowDown on the
+// focused handle. The order and the collapsed set live in localStorage
+// date_tool_layout_v1 through layoutLoad / layoutSave / layoutReset (the
+// desktop layout.json rules), apart from settings, so a v1.1.0 page never
+// meets an unknown settings field. A newer or unreadable record is never
+// written; the layout then lasts for the session only and the Settings note
+// says so. Collapsing only toggles the `card-collapsed` class: inputs keep
+// their values and live results keep updating while a card is hidden.
+// Mobile never sets inline styles: dragging and the gold drop line are
+// classes too, and only the handle has `touch-action: none`, so a swipe
+// anywhere else on a card scrolls the page.
+// ---------------------------------------------------------------------------
+
+const LAYOUT_SCHEMA_VERSION = 1;
+const LAYOUT_STATE_KEYS = ["schemaVersion", "cardOrder", "collapsedCards"];
+// A drag starts after 4 px with a mouse and 10 px with a finger or pen: a
+// tap often wanders a few px (Android's touch slop is about 8 dp). Holding
+// within 60 px of the top or bottom edge auto-scrolls, at up to 12 px a
+// frame (faster the deeper the pointer is in the edge zone), but only once
+// the drag has really travelled 24 px or been held for 300 ms, so a wobbly
+// tap near an edge never scrolls the page under a still finger.
+const DRAG_START_PX = 4;
+const DRAG_START_TOUCH_PX = 10;
+const DRAG_EDGE_PX = 60;
+const DRAG_SCROLL_PX = 12;
+const DRAG_EDGE_ARM_PX = 24;
+const DRAG_EDGE_HOLD_MS = 300;
+
+let layoutState = defaultLayout();
+let layoutLoadStatus = "empty"; // ok|empty|newer|corrupt|unreadable|unavailable
+let layoutStoreBlocked = false; // newer or unreadable record: never write over it
+let layoutWriteFailed = false; // the last layout write failed
+let layoutFailureAnnounced = false; // a failure streak is announced once
+let layoutNoteOverride = ""; // a one-off note (after a reset) until the next change
+let layoutWriteSeq = 0;
+let layoutWriteChain = Promise.resolve();
+let layoutLastSave = Promise.resolve();
+let layoutAnnounceTimer = 0;
+let cardDrag = null;
+let cardDragClickGuard = null; // the handle whose next click ends a real drag
+let cardMoveMenu = null; // the shared Move up / Move down / Done group
+let cardMoveMenuKey = ""; // the card whose move menu is open
+
+function defaultLayout() {
+  return { schemaVersion: LAYOUT_SCHEMA_VERSION, cardOrder: [...CARD_KEYS], collapsedCards: [] };
+}
+
+function cloneLayout(state) {
+  return {
+    schemaVersion: LAYOUT_SCHEMA_VERSION,
+    cardOrder: [...state.cardOrder],
+    collapsedCards: [...state.collapsedCards]
+  };
+}
+
+// The same rules as the Rust LayoutState: exactly these keys, each card once
+// in cardOrder, and unique valid keys in collapsedCards.
+function isLayoutState(s) {
+  if (!s || typeof s !== "object" || Array.isArray(s)) return false;
+  if (Object.keys(s).length !== LAYOUT_STATE_KEYS.length) return false;
+  if (!LAYOUT_STATE_KEYS.every((k) => Object.hasOwn(s, k))) return false;
+  if (s.schemaVersion !== LAYOUT_SCHEMA_VERSION) return false;
+  const { cardOrder, collapsedCards } = s;
+  if (!Array.isArray(cardOrder) || cardOrder.length !== CARD_KEYS.length) return false;
+  if (!cardOrder.every((k) => CARD_KEYS.includes(k))) return false;
+  if (new Set(cardOrder).size !== CARD_KEYS.length) return false;
+  if (!Array.isArray(collapsedCards) || collapsedCards.length > CARD_KEYS.length) return false;
+  return (
+    collapsedCards.every((k) => CARD_KEYS.includes(k)) &&
+    new Set(collapsedCards).size === collapsedCards.length
+  );
+}
+
+function cardEl(key) {
+  return Object.hasOwn(CARD_META, key) ? $(CARD_META[key].card) : null;
+}
+
+function cardTitle(key) {
+  return UI_TEXT.cardTitles[key] ?? CARD_META[key]?.label ?? key;
+}
+
+function isCardCollapsed(key) {
+  return layoutState.collapsedCards.includes(key);
+}
+
+// The cards in their current DOM order.
+function domCardOrder() {
+  const container = $("cardsContainer");
+  if (!container) return [...layoutState.cardOrder];
+  return Array.from(container.children)
+    .map((el) => el.getAttribute?.("data-calc"))
+    .filter((k) => CARD_KEYS.includes(k));
+}
+
+// The first input of the first expanded card, or the first card's collapse
+// button when every card is collapsed.
+function firstFocusTarget() {
+  const order = domCardOrder();
+  const key = order.find((k) => !isCardCollapsed(k));
+  if (key) return $(CARD_META[key].first);
+  return cardEl(order[0])?.querySelector(".collapse-btn") ?? null;
+}
+
+function renderCardCollapsed(key) {
+  const card = cardEl(key);
+  if (!card) return;
+  const collapsed = isCardCollapsed(key);
+  card.classList.toggle("card-collapsed", collapsed);
+  const button = card.querySelector(".collapse-btn");
+  if (!button) return;
+  const title = cardTitle(key);
+  button.setAttribute("aria-expanded", String(!collapsed));
+  button.setAttribute("aria-label", collapsed ? UI_TEXT.layoutExpand(title) : UI_TEXT.layoutCollapse(title));
+  const glyph = collapsed ? UI_TEXT.layoutExpandGlyph : UI_TEXT.layoutCollapseGlyph;
+  if (button.textContent !== glyph) button.textContent = glyph;
+}
+
+// The quick-nav pills follow the card order; "history" stays last.
+function syncQuickNav(order) {
+  const nav = document.querySelector(".quick-nav");
+  if (!nav) return;
+  const links = Array.from(nav.querySelectorAll(".quick-link[data-calc]"));
+  order.forEach((key, index) => {
+    const link = links.find((l) => l.getAttribute("data-calc") === key);
+    if (link && nav.children[index] !== link) nav.insertBefore(link, nav.children[index] ?? null);
+  });
+  const historyLink = nav.querySelector('.quick-link[href="#historySection"]');
+  if (historyLink && nav.children[nav.children.length - 1] !== historyLink) {
+    nav.appendChild(historyLink);
+  }
+}
+
+function applyLayout(state = layoutState) {
+  const container = $("cardsContainer");
+  if (container) {
+    state.cardOrder.forEach((key, index) => {
+      const card = cardEl(key);
+      if (card && container.children[index] !== card) {
+        container.insertBefore(card, container.children[index] ?? null);
+      }
+    });
+  }
+  CARD_KEYS.forEach((key) => renderCardCollapsed(key));
+  syncQuickNav(state.cardOrder);
+}
+
+function layoutNoteText() {
+  if (layoutLoadStatus === "newer") return UI_TEXT.layoutNewerNote;
+  if (layoutLoadStatus === "unreadable") return UI_TEXT.layoutUnreadableNote;
+  if (layoutWriteFailed || layoutLoadStatus === "unavailable") return UI_TEXT.layoutWriteFailedNote;
+  if (layoutNoteOverride) return layoutNoteOverride;
+  if (layoutLoadStatus === "corrupt") return UI_TEXT.layoutCorruptNote;
+  return layoutSessionOnly() ? UI_TEXT.layoutSessionNote : UI_TEXT.layoutSavedNote;
+}
+
+// When the browser refuses site data, the layout lives in the session store
+// only and is not restored after the app closes.
+function layoutSessionOnly() {
+  return !usePersistentStorage();
+}
+
+function renderLayoutNote() {
+  const el = $("layoutStatusText");
+  if (!el) return;
+  const text = layoutNoteText();
+  if (el.textContent !== text) el.textContent = text;
+  el.classList.toggle(
+    "is-error",
+    layoutStoreBlocked || layoutWriteFailed || layoutLoadStatus === "unavailable"
+  );
+}
+
+// Polite, and re-announced when the same text repeats (a move at an edge).
+function announceLayout(text) {
+  const el = $("layoutLiveStatus");
+  if (!el) return;
+  window.clearTimeout(layoutAnnounceTimer);
+  layoutAnnounceTimer = 0;
+  if (el.textContent !== text) {
+    el.textContent = text;
+    return;
+  }
+  el.textContent = "";
+  layoutAnnounceTimer = window.setTimeout(() => {
+    layoutAnnounceTimer = 0;
+    el.textContent = text;
+  }, 60);
+}
+
+// Writes run one at a time, in order, so the last change wins. The chain
+// never rejects.
+function queueLayoutWrite(run) {
+  const result = layoutWriteChain.then(run, run);
+  layoutWriteChain = result.then(
+    () => undefined,
+    () => undefined
+  );
+  return result;
+}
+
+// A refusal from the store itself (a newer-version or unreadable record
+// appeared after launch) blocks further writes. Any other failure leaves the
+// layout applied for this session and says plainly that it is not saved.
+function onLayoutWriteFailed(err, ticket) {
+  const reason = String(err ?? "");
+  if (reason.includes("layout_newer_schema")) {
+    layoutLoadStatus = "newer";
+    layoutStoreBlocked = true;
+  } else if (reason.includes("layout_unreadable")) {
+    layoutLoadStatus = "unreadable";
+    layoutStoreBlocked = true;
+  } else if (ticket !== layoutWriteSeq) {
+    return; // a newer write (a full snapshot) decides the outcome
+  } else {
+    layoutWriteFailed = true;
+  }
+  layoutNoteOverride = "";
+  renderLayoutNote();
+  if (!layoutFailureAnnounced) {
+    layoutFailureAnnounced = true;
+    announceLayout(layoutNoteText());
+  }
+}
+
+// Saves the whole current layout (a snapshot), or, for a reset, asks the
+// store to write the default record.
+function saveLayout({ reset = false } = {}) {
+  layoutNoteOverride = "";
+  if (layoutStoreBlocked) {
+    renderLayoutNote();
+    layoutLastSave = layoutWriteChain;
+    return layoutLastSave;
+  }
+  const state = cloneLayout(layoutState);
+  const ticket = ++layoutWriteSeq;
+  const run = reset ? () => layoutReset() : () => layoutSave(state);
+  layoutLastSave = queueLayoutWrite(run).then(
+    () => {
+      if (ticket !== layoutWriteSeq || layoutStoreBlocked) return;
+      layoutWriteFailed = false;
+      layoutFailureAnnounced = false;
+      if (layoutLoadStatus !== "ok") layoutLoadStatus = "ok";
+      layoutNoteOverride = reset ? UI_TEXT.layoutResetNote : "";
+      renderLayoutNote();
+    },
+    (err) => onLayoutWriteFailed(err, ticket)
+  );
+  return layoutLastSave;
+}
+
+// Launch: read the record before the first render. Anything but a valid
+// "ok" record means the default layout.
+async function loadLayout() {
+  let load = null;
+  try {
+    load = layoutLoad();
+  } catch {
+    load = null;
+  }
+  const status = load && typeof load.status === "string" ? load.status : "";
+  layoutState = defaultLayout();
+  layoutStoreBlocked = false;
+  layoutWriteFailed = false;
+  layoutNoteOverride = "";
+  if (status === "newer" || status === "unreadable") {
+    layoutLoadStatus = status;
+    layoutStoreBlocked = true;
+  } else if (status === "ok" && isLayoutState(load.state)) {
+    layoutLoadStatus = "ok";
+    layoutState = cloneLayout(load.state);
+  } else if (status === "corrupt") {
+    layoutLoadStatus = "corrupt";
+  } else if (status === "ok" || status === "empty") {
+    layoutLoadStatus = "empty";
+  } else {
+    // No layout store on this backend: still try to save, and say so if
+    // that fails.
+    layoutLoadStatus = "unavailable";
+  }
+  applyLayout(layoutState);
+  renderLayoutNote();
+}
+
+// Mobile, another tab (plan A8): the layout record in storage changed. This
+// tab adopts it (a new order or collapsed set, a reset, a clear, or a
+// newer-version record) and re-renders without writing. While a drag is in
+// progress here the event is skipped: the drop saves this tab's order and
+// the last writer wins.
+function syncLayoutFromStorage() {
+  if (cardDrag) return;
+  let load = null;
+  try {
+    load = layoutLoad();
+  } catch {
+    load = null;
+  }
+  const status = load && typeof load.status === "string" ? load.status : "";
+  layoutNoteOverride = "";
+  if (status === "newer" || status === "unreadable") {
+    layoutLoadStatus = status;
+    layoutStoreBlocked = true;
+    renderLayoutNote();
+    return;
+  }
+  const wasCollapsed = [...layoutState.collapsedCards];
+  layoutStoreBlocked = false;
+  layoutWriteFailed = false;
+  layoutFailureAnnounced = false;
+  if (status === "ok" && isLayoutState(load.state)) {
+    layoutLoadStatus = "ok";
+    layoutState = cloneLayout(load.state);
+  } else {
+    layoutLoadStatus = status === "corrupt" ? "corrupt" : "empty";
+    layoutState = defaultLayout();
+  }
+  // Moving a card can drop focus: put it back without scrolling, or on the
+  // collapse button when its card was just collapsed.
+  const active = document.activeElement;
+  applyLayout(layoutState);
+  if (active && active !== document.body && active.isConnected) {
+    const card = active.closest?.(".calc-section");
+    const key = card?.getAttribute?.("data-calc");
+    const hidden = key && isCardCollapsed(key) && card.querySelector(".calc-card-body")?.contains(active);
+    const next = hidden ? card.querySelector(".collapse-btn") : active;
+    if (next && document.activeElement !== next) next.focus({ preventScroll: true });
+  }
+  wasCollapsed.filter((k) => !isCardCollapsed(k)).forEach((k) => onCardExpanded(k));
+  renderLayoutNote();
+}
+
+function onCardExpanded(key) {
+  // The countdown ticks on while hidden; render the current value at once.
+  if (key === "countdown" && cdActive) updateCountdownLive({ fromTick: true });
+}
+
+function setCardCollapsed(key, collapsed, { save = true } = {}) {
+  if (!CARD_KEYS.includes(key)) return false;
+  if (isCardCollapsed(key) === collapsed) {
+    renderCardCollapsed(key);
+    return false;
+  }
+  layoutState = {
+    ...layoutState,
+    collapsedCards: collapsed
+      ? [...layoutState.collapsedCards, key]
+      : layoutState.collapsedCards.filter((k) => k !== key)
+  };
+  renderCardCollapsed(key);
+  if (!collapsed) onCardExpanded(key);
+  if (save) saveLayout();
+  return true;
+}
+
+// Opening a collapsed card (quick-nav, history restore, a focus return from
+// Settings) expands it and saves that.
+function expandCard(key) {
+  return setCardCollapsed(key, false);
+}
+
+function expandCardContaining(el) {
+  const card = el?.closest?.(".calc-section");
+  const key = card?.getAttribute?.("data-calc");
+  if (key && isCardCollapsed(key)) expandCard(key);
+}
+
+function setCardOrder(order) {
+  if (order.join() === layoutState.cardOrder.join()) return false;
+  layoutState = { ...layoutState, cardOrder: [...order] };
+  applyLayout(layoutState);
+  saveLayout();
+  return true;
+}
+
+// Keyboard: ArrowUp/ArrowDown on the focused handle moves its card one place
+// and keeps focus on that handle. The Move up / Move down buttons of the
+// move menu move it the same way and keep focus on the pressed button.
+function moveCardBy(key, delta, { focusEl = null } = {}) {
+  finishCardDrag(true);
+  const order = domCardOrder();
+  const from = order.indexOf(key);
+  if (from < 0) return;
+  const to = Math.max(0, Math.min(order.length - 1, from + delta));
+  if (to !== from) {
+    order.splice(from, 1);
+    order.splice(to, 0, key);
+    setCardOrder(order);
+  }
+  const handle = focusEl ? null : cardEl(key)?.querySelector(".drag-handle");
+  if (focusEl?.isConnected && document.activeElement !== focusEl) focusEl.focus({ preventScroll: true });
+  if (handle && document.activeElement !== handle) handle.focus({ preventScroll: true });
+  (focusEl ?? handle)?.scrollIntoView?.({ block: "nearest" });
+  announceLayout(UI_TEXT.layoutMoved(cardTitle(key), to + 1, order.length));
+}
+
+function clearCardDropHints() {
+  document.querySelectorAll("#cardsContainer .calc-section").forEach((card) => {
+    card.classList.remove("card-drop-before", "card-drop-after");
+  });
+}
+
+// Picks the card under the pointer's height and marks a gold drop line
+// before or after it.
+function updateCardDropTarget(x, y) {
+  if (!cardDrag) return;
+  clearCardDropHints();
+  cardDrag.target = null;
+  const cards = [];
+  for (const card of document.querySelectorAll("#cardsContainer .calc-section")) {
+    if (card === cardDrag.card) continue;
+    const rect = card.getBoundingClientRect?.();
+    if (!rect || ![rect.top, rect.bottom, rect.left, rect.right].every(Number.isFinite)) continue;
+    cards.push({ card, rect });
+  }
+  if (cards.length === 0) return;
+  const containerRect = $("cardsContainer")?.getBoundingClientRect?.();
+  const inBand =
+    (containerRect && x >= containerRect.left - 80 && x <= containerRect.right + 80) ||
+    cards.some(({ rect }) => x >= rect.left && x <= rect.right);
+  if (!inBand) return;
+  let target;
+  if (y < cards[0].rect.top) {
+    target = cards[0];
+  } else if (y > cards[cards.length - 1].rect.bottom) {
+    target = cards[cards.length - 1];
+  } else {
+    const distance = ({ rect }) => Math.abs(y - (rect.top + rect.bottom) / 2);
+    target = cards.reduce((best, c) => (distance(c) < distance(best) ? c : best));
+  }
+  cardDrag.target = target.card;
+  cardDrag.after = y >= (target.rect.top + target.rect.bottom) / 2;
+  target.card.classList.add(cardDrag.after ? "card-drop-after" : "card-drop-before");
+}
+
+// The auto-scroll step for a pointer at height y: 0 away from the edges,
+// otherwise 2 to 12 px a frame, faster the deeper it is in the edge zone.
+function cardDragEdgeDelta(y) {
+  const height = window.innerHeight;
+  let depth = 0;
+  if (y < DRAG_EDGE_PX) depth = y - DRAG_EDGE_PX;
+  else if (y > height - DRAG_EDGE_PX) depth = y - (height - DRAG_EDGE_PX);
+  if (depth === 0) return 0;
+  const step = Math.round((DRAG_SCROLL_PX * Math.min(Math.abs(depth), DRAG_EDGE_PX)) / DRAG_EDGE_PX);
+  return Math.sign(depth) * Math.max(2, step);
+}
+
+// Holding near the top or bottom edge scrolls the page, once armed.
+function scrollCardDrag() {
+  if (!cardDrag?.moved || !cardDrag.edgeArmed) return;
+  const { x, y } = cardDrag;
+  const delta = cardDragEdgeDelta(y);
+  if (delta !== 0) {
+    window.scrollBy?.({ top: delta, behavior: "instant" });
+    updateCardDropTarget(x, y);
+    cardDrag.frame = window.requestAnimationFrame?.(scrollCardDrag) ?? 0;
+  } else {
+    cardDrag.frame = 0;
+  }
+}
+
+// The edge auto-scroll arms after the drag has travelled DRAG_EDGE_ARM_PX
+// or been held for DRAG_EDGE_HOLD_MS.
+function armCardDragEdge() {
+  if (!cardDrag?.moved) return;
+  cardDrag.armTimer = 0;
+  cardDrag.edgeArmed = true;
+  if (!cardDrag.frame && cardDragEdgeDelta(cardDrag.y) !== 0) {
+    cardDrag.frame = window.requestAnimationFrame?.(scrollCardDrag) ?? 0;
+  }
+}
+
+function finishCardDrag(cancelled = false, event = null) {
+  if (!cardDrag || (event && event.pointerId !== cardDrag.pointerId)) return;
+  if (!cancelled && cardDrag.moved && event) updateCardDropTarget(event.clientX, event.clientY);
+  const drag = cardDrag;
+  cardDrag = null;
+  if (drag.frame) window.cancelAnimationFrame?.(drag.frame);
+  if (drag.armTimer) window.clearTimeout(drag.armTimer);
+  // The click that ends a real drag must not open the move menu.
+  if (drag.moved) cardDragClickGuard = drag.handle;
+  drag.card.classList.remove("card-dragging");
+  clearCardDropHints();
+  try {
+    drag.handle.releasePointerCapture?.(drag.pointerId);
+  } catch {
+    // A synthetic or already released pointer has no capture.
+  }
+  if (cancelled || !drag.moved || !drag.target) return;
+  const container = $("cardsContainer");
+  if (!container || drag.target.parentNode !== container) return;
+  const children = Array.from(container.children);
+  const targetIndex = children.indexOf(drag.target);
+  const reference = drag.after ? children[targetIndex + 1] ?? null : drag.target;
+  // Moving the card takes it out of the page for a moment, which drops focus
+  // held inside it (an input, its collapse button): put focus back without
+  // scrolling, as the keyboard move and the other-tab sync do.
+  const active = document.activeElement;
+  const hadFocus = Boolean(active && active !== document.body && drag.card.contains(active));
+  if (reference !== drag.card) container.insertBefore(drag.card, reference);
+  if (hadFocus) {
+    const next = active.isConnected ? active : drag.handle;
+    if (document.activeElement !== next) next.focus({ preventScroll: true });
+  }
+  const order = domCardOrder();
+  if (setCardOrder(order)) {
+    announceLayout(UI_TEXT.layoutMoved(cardTitle(drag.key), order.indexOf(drag.key) + 1, order.length));
+  }
+}
+
+// The move menu: a tap, click or Enter/Space on a handle (without dragging)
+// opens Move up / Move down / Done under that card's title row, so a phone
+// screen-reader user (no arrow keys, no practical drag) can reorder cards
+// with single taps (WCAG 2.5.7). One shared group moves between cards.
+function buildCardMoveMenu() {
+  const menu = document.createElement("div");
+  menu.id = "cardMoveMenu";
+  menu.className = "card-move-menu hidden";
+  menu.setAttribute("role", "group");
+  [
+    ["up", UI_TEXT.layoutMoveUp],
+    ["down", UI_TEXT.layoutMoveDown],
+    ["done", UI_TEXT.layoutMoveDone]
+  ].forEach(([action, text]) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "card-move-btn";
+    button.setAttribute("data-move", action);
+    button.textContent = text;
+    button.addEventListener("click", () => onCardMoveAction(action, button));
+    menu.append(button);
+  });
+  return menu;
+}
+
+// Marks Move up / Move down unavailable at the ends (aria-disabled, not
+// disabled, so a focused button keeps focus).
+function updateCardMoveEdges() {
+  if (!cardMoveMenu || !cardMoveMenuKey) return;
+  const order = domCardOrder();
+  const at = order.indexOf(cardMoveMenuKey);
+  cardMoveMenu.querySelectorAll(".card-move-btn").forEach((button) => {
+    const action = button.getAttribute("data-move");
+    const edge = (action === "up" && at <= 0) || (action === "down" && at >= order.length - 1);
+    if (edge) button.setAttribute("aria-disabled", "true");
+    else button.removeAttribute("aria-disabled");
+  });
+}
+
+function openCardMoveMenu(key) {
+  const card = cardEl(key);
+  const body = card?.querySelector(".calc-card-body");
+  if (!cardMoveMenu || !body) return;
+  if (cardMoveMenu.parentNode !== card) card.insertBefore(cardMoveMenu, body);
+  cardMoveMenuKey = key;
+  cardMoveMenu.setAttribute("aria-label", UI_TEXT.layoutMove(cardTitle(key)));
+  cardMoveMenu.classList.remove("hidden");
+  updateCardMoveEdges();
+  cardMoveMenu.querySelector(".card-move-btn")?.focus({ preventScroll: true });
+  cardMoveMenu.scrollIntoView?.({ block: "nearest" });
+}
+
+// Closing returns focus to the card's handle when it was in the menu (or
+// when asked), unless the pointer is already going elsewhere.
+function closeCardMoveMenu({ focusHandle = false, keepFocus = false } = {}) {
+  if (!cardMoveMenu || !cardMoveMenuKey) return false;
+  const handle = cardEl(cardMoveMenuKey)?.querySelector(".drag-handle");
+  const hadFocus = cardMoveMenu.contains(document.activeElement);
+  cardMoveMenuKey = "";
+  cardMoveMenu.classList.add("hidden");
+  if (handle && !keepFocus && (focusHandle || hadFocus) && document.activeElement !== handle) {
+    handle.focus({ preventScroll: true });
+  }
+  return true;
+}
+
+function onCardMoveAction(action, button) {
+  const key = cardMoveMenuKey;
+  if (!key) return;
+  if (action === "done") closeCardMoveMenu({ focusHandle: true });
+  else {
+    moveCardBy(key, action === "up" ? -1 : 1, { focusEl: button });
+    updateCardMoveEdges();
+  }
+}
+
+function bindCardLayout() {
+  const hint = $("cardMoveHint");
+  if (hint) hint.textContent = UI_TEXT.layoutMoveHint;
+  const resetBtn = $("resetLayoutBtn");
+  if (resetBtn) resetBtn.textContent = UI_TEXT.layoutResetButton;
+  cardMoveMenu = buildCardMoveMenu();
+  const firstCard = cardEl(domCardOrder()[0]);
+  firstCard?.insertBefore(cardMoveMenu, firstCard.querySelector(".calc-card-body"));
+
+  CARD_KEYS.forEach((key) => {
+    const card = cardEl(key);
+    if (!card) return;
+    const title = cardTitle(key);
+    card.querySelector(".collapse-btn")?.addEventListener("click", () => {
+      finishCardDrag(true);
+      setCardCollapsed(key, !isCardCollapsed(key));
+    });
+    const handle = card.querySelector(".drag-handle");
+    if (!handle) return;
+    handle.setAttribute("aria-label", UI_TEXT.layoutMove(title));
+    handle.setAttribute("title", UI_TEXT.layoutDragTitle);
+    handle.addEventListener("pointerdown", (event) => {
+      if (cardDrag || (event.button ?? 0) !== 0 || event.isPrimary === false) return;
+      event.preventDefault();
+      cardDragClickGuard = null;
+      cardDrag = {
+        key,
+        card,
+        handle,
+        pointerId: event.pointerId,
+        pointerType: event.pointerType || "",
+        startX: event.clientX,
+        startY: event.clientY,
+        x: event.clientX,
+        y: event.clientY,
+        moved: false,
+        target: null,
+        after: false,
+        frame: 0,
+        edgeArmed: false,
+        armTimer: 0
+      };
+      try {
+        handle.setPointerCapture?.(event.pointerId);
+      } catch {
+        // The document listeners also follow an uncaptured pointer.
+      }
+    });
+    handle.addEventListener("lostpointercapture", (event) => {
+      if (cardDrag?.handle === handle) finishCardDrag(true, event);
+    });
+    // A tap, click or Enter/Space opens (or closes) this card's move menu;
+    // the click that ends a real drag does not.
+    handle.addEventListener("click", () => {
+      if (cardDragClickGuard === handle) {
+        cardDragClickGuard = null;
+        return;
+      }
+      if (cardMoveMenuKey === key) closeCardMoveMenu({ focusHandle: true });
+      else openCardMoveMenu(key);
+    });
+    handle.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") cardDragClickGuard = null;
+      if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+      if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+      event.preventDefault();
+      moveCardBy(key, event.key === "ArrowUp" ? -1 : 1);
+    });
+  });
+
+  document.addEventListener("pointermove", (event) => {
+    if (!cardDrag || event.pointerId !== cardDrag.pointerId) return;
+    cardDrag.x = event.clientX;
+    cardDrag.y = event.clientY;
+    const dist = Math.hypot(event.clientX - cardDrag.startX, event.clientY - cardDrag.startY);
+    if (!cardDrag.moved) {
+      const threshold = cardDrag.pointerType === "mouse" ? DRAG_START_PX : DRAG_START_TOUCH_PX;
+      if (dist < threshold) return;
+      cardDrag.moved = true;
+      cardDrag.card.classList.add("card-dragging");
+      closeCardMoveMenu();
+      cardDrag.armTimer = window.setTimeout(armCardDragEdge, DRAG_EDGE_HOLD_MS);
+    }
+    event.preventDefault();
+    updateCardDropTarget(event.clientX, event.clientY);
+    if (!cardDrag.edgeArmed && dist > DRAG_EDGE_ARM_PX) {
+      if (cardDrag.armTimer) window.clearTimeout(cardDrag.armTimer);
+      cardDrag.armTimer = 0;
+      cardDrag.edgeArmed = true;
+    }
+    if (cardDrag.edgeArmed && !cardDrag.frame && cardDragEdgeDelta(event.clientY) !== 0) {
+      cardDrag.frame = window.requestAnimationFrame?.(scrollCardDrag) ?? 0;
+    }
+  });
+  // A pointer going down anywhere outside the open move menu and its handle
+  // closes the menu (focus follows the pointer).
+  document.addEventListener("pointerdown", (event) => {
+    if (!cardMoveMenuKey) return;
+    const target = event.target;
+    if (cardMoveMenu?.contains(target)) return;
+    if (target?.closest?.(".drag-handle") === cardEl(cardMoveMenuKey)?.querySelector(".drag-handle")) return;
+    closeCardMoveMenu({ keepFocus: true });
+  });
+  document.addEventListener("pointerup", (event) => finishCardDrag(false, event));
+  document.addEventListener("pointercancel", (event) => finishCardDrag(true, event));
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    finishCardDrag(true);
+    // Escape in the move menu, or on its handle, closes it.
+    const target = event.target;
+    const menuHandle = cardMoveMenuKey ? cardEl(cardMoveMenuKey)?.querySelector(".drag-handle") : null;
+    if (menuHandle && (cardMoveMenu?.contains(target) || target === menuHandle)) {
+      event.preventDefault();
+      closeCardMoveMenu({ focusHandle: true });
+    }
+  });
+  window.addEventListener("blur", () => finishCardDrag(true));
+
+  // A pill of a collapsed card expands it; the link then scrolls to it.
+  document.querySelectorAll(".quick-nav .quick-link[data-calc]").forEach((link) => {
+    link.addEventListener("click", () => {
+      const key = link.getAttribute("data-calc");
+      if (isCardCollapsed(key)) expandCard(key);
+    });
+  });
+
+  resetBtn?.addEventListener("click", () => {
+    closeCardMoveMenu({ keepFocus: true });
+    finishCardDrag(true);
+    layoutState = defaultLayout();
+    applyLayout(layoutState);
+    CARD_KEYS.forEach((key) => onCardExpanded(key));
+    saveLayout({ reset: true });
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -9573,6 +10675,8 @@ function closeModal(modalId, fallbackId) {
     back && back !== document.body && document.contains(back) && typeof back.focus === "function"
       ? back
       : $(fallbackId);
+  // Focus going back into a collapsed card (an Edit-calendar link) opens it.
+  expandCardContaining(target);
   target?.focus({ preventScroll: true });
 }
 
@@ -10592,8 +11696,8 @@ function bindControls() {
   });
   window.matchMedia("(display-mode: standalone)").addEventListener?.("change", updateInstallUi);
 
-  // Cross-tab sync: another tab of this app changed history, settings or
-  // the saved countdown.
+  // Cross-tab sync: another tab of this app changed history, settings, the
+  // saved countdown or the card layout.
   window.addEventListener("storage", (event) => {
     if (event.storageArea && event.storageArea !== storageArea()) return;
     if (event.key === HISTORY_STORAGE_KEY || event.key === null) {
@@ -10604,6 +11708,9 @@ function bindControls() {
     }
     if (event.key === COUNTDOWN_STORAGE_KEY || event.key === null) {
       syncCountdownFromStorage();
+    }
+    if (event.key === LAYOUT_STORAGE_KEY || event.key === null) {
+      syncLayoutFromStorage();
     }
   });
 
@@ -10874,7 +11981,10 @@ async function initialize() {
   bindControls();
   bindSettingsControls();
   bindCards();
+  bindCardLayout();
   syncAddBusinessUi();
+  // A8: the saved card order and collapsed set apply before the first render.
+  await loadLayout();
   updateInstallUi();
   setReleaseLinks(RELEASE_URL);
   registerServiceWorkerIfSupported();
@@ -10927,7 +12037,7 @@ async function initialize() {
 
   // Avoid forcing the virtual keyboard open on touch devices.
   if (!window.matchMedia("(pointer: coarse)").matches) {
-    $("betweenStart")?.focus({ preventScroll: true });
+    firstFocusTarget()?.focus({ preventScroll: true });
   }
 }
 

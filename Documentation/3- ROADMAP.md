@@ -23,6 +23,12 @@
 | A2 | Countdown persistence, history-loss fix, version split | countdown restores after close/reopen with "finished" wording; an unreadable history goes read-only, never overwritten; CI version checks split app/engine | done 2026-11-18 (`c66843a`) |
 | A3 | v1.1.0 release | full checks + manual checklist; **owner-approved** merge → v1.1.0 Release | done 2026-11-18 (owner merged PR #3 → `7f46254`; Release v1.1.0 verified, E-16). Manual installed-exe/phone checklist: owner check |
 
+## v1.2.0 milestone (requested 2026-11-18, [plan](specs/5-%20PORTABLE_CALCULATOR_PLAN.md) A8)
+
+| # | Milestone | Done when | Status |
+|---|---|---|---|
+| A8 | Collapsible and reorderable cards | collapse, drag/keyboard reorder and reset work on desktop and phone; the layout is saved in its own store; checks green; **owner-approved** merge → v1.2.0 Release | in progress |
+
 After v1.1.0: Part B, Portable Calculator Tool v1.0.0, in a new repo (M0–M11 in the plan).
 
 ## Backlog (proposed, not authorized)

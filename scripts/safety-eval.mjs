@@ -27,14 +27,20 @@
 //      mini calendars, Business Days range picks, the saved countdown
 //      (restore, finished while closed, no writes on ticks or input, Forget,
 //      bad records, other-tab sync) and the history read-only banner.
+//      v1.2.0 (plan A8): collapsible and reorderable cards (collapse and
+//      expand persist, pointer and keyboard reorder, quick-nav order,
+//      opening a collapsed card expands it, reset, bad records, other-tab
+//      sync) over a small card geometry model (getBoundingClientRect,
+//      offsetParent, scroll, pointer capture, focus fixup on DOM moves).
 //   C  Desktop UI. ui/index.html + ui/main.js in the same mini-DOM with a
 //      mocked window.__TAURI__.core.invoke: calc_* and the other engine
 //      commands go to the Rust bridge, history and settings live in memory
 //      (settings validated through the bridge's validate_calendar), and the
 //      v1.1.0 history_state/retry/reset and countdown_load/save/clear
 //      commands follow commands.rs over an in-memory "app data directory"
-//      (history.json(.bak), countdown.json(.bak), read errors). The same
-//      v1.1.0 probes as slice B run here. Also runs
+//      (history.json(.bak), countdown.json(.bak), read errors), and the
+//      v1.2.0 layout_load/save/reset commands do the same for layout.json.
+//      The same v1.1.0 and v1.2.0 probes as slice B run here. Also runs
 //      the desktop's own in-page smoke test, an out-of-order IPC race, a
 //      failed set_settings revert, and compares every card's rendered text
 //      with the mobile UI for the same inputs, both on the fixed walk-through
@@ -47,8 +53,8 @@
 //      persist-credentials: false, identical inline node blocks, release
 //      gate), the app/engine version split, out-of-month cell contrast and
 //      44 px touch targets, each check also proven to fail on planted
-//      mutants; the v1.1.0 UI probes are also run on planted mutants of
-//      ui/main.js and the mobile script, and each must fail.
+//      mutants; the v1.1.0 and v1.2.0 UI probes are also run on planted
+//      mutants of ui/main.js and the mobile script, and each must fail.
 //
 // Nothing here reads or writes real user data: localStorage is an in-memory
 // object, desktop history/settings live in the mock backend, and the only
@@ -72,13 +78,13 @@ import vm from "node:vm";
 
 const SELF = fileURLToPath(import.meta.url);
 const ROOT = resolve(dirname(SELF), "..");
-const EVAL_VERSION = "1.1.0";
+const EVAL_VERSION = "1.2.0";
 const CARD_SCHEMA = "date-calculator-tool/safety-eval-system-card";
 const CARD_SCHEMA_VERSION = "1.0.0";
 const APP_NAME = "Date Calculator Tool";
 // The app and the date-core engine are versioned separately since v1.1.0
 // (plan A4): the app moves, the engine (and golden.json) stays put.
-const APP_VERSION = "1.1.0";
+const APP_VERSION = "1.2.0";
 const ENGINE_VERSION = "1.0.0";
 const DEFAULT_SEED = 20261116;
 const DEFAULT_CASES = 4000;
@@ -2008,6 +2014,15 @@ class MockEvent {
     this.clipboardData = init.clipboardData ?? null;
     this.storageArea = init.storageArea ?? null;
     this.persisted = Boolean(init.persisted);
+    // MouseEvent / PointerEvent fields (v1.2.0 card drag). As in browsers,
+    // an init without isPrimary makes a non-primary pointer.
+    this.clientX = Number(init.clientX ?? 0);
+    this.clientY = Number(init.clientY ?? 0);
+    this.button = Number(init.button ?? 0);
+    this.buttons = Number(init.buttons ?? 0);
+    this.pointerId = Number(init.pointerId ?? 0);
+    this.pointerType = String(init.pointerType ?? "");
+    this.isPrimary = Boolean(init.isPrimary);
   }
   preventDefault() {
     if (this.cancelable) this.defaultPrevented = true;
@@ -2243,6 +2258,17 @@ class MockElement {
   get isConnected() {
     return this.ownerDocument ? this.ownerDocument.contains(this) : false;
   }
+  // null when the element is not rendered: itself or an ancestor hidden
+  // (the `hidden` attribute or class), or inside the body of a collapsed
+  // card (`.calc-section.card-collapsed .calc-card-body { display: none }`).
+  get offsetParent() {
+    if (!this.isConnected || this === this.ownerDocument?.body) return null;
+    for (let cur = this; cur && cur.nodeType === 1; cur = cur.parentNode) {
+      if (cur.hasAttribute("hidden") || cur.classList.contains("hidden")) return null;
+      if (cur.classList.contains("calc-card-body") && cur.closest(".calc-section")?.classList.contains("card-collapsed")) return null;
+    }
+    return this.parentElement;
+  }
 
   get value() {
     if (this.tagName === "SELECT") {
@@ -2286,7 +2312,10 @@ class MockElement {
     return this.childNodes.map((n) => n.textContent).join("");
   }
   set textContent(v) {
-    for (const c of this.childNodes) c.parentNode = null;
+    for (const c of this.childNodes) {
+      focusFixup(this.ownerDocument, c);
+      c.parentNode = null;
+    }
     this.childNodes = [];
     const s = v === null || v === undefined ? "" : String(v);
     if (s) this._adopt(new MockText(s, this.ownerDocument));
@@ -2328,6 +2357,7 @@ class MockElement {
   _detach(node) {
     const i = this.childNodes.indexOf(node);
     if (i >= 0) this.childNodes.splice(i, 1);
+    focusFixup(this.ownerDocument, node);
     node.parentNode = null;
   }
   _toNode(n) {
@@ -2362,7 +2392,10 @@ class MockElement {
     return node;
   }
   replaceChildren(...nodes) {
-    for (const c of this.childNodes) c.parentNode = null;
+    for (const c of this.childNodes) {
+      focusFixup(this.ownerDocument, c);
+      c.parentNode = null;
+    }
     this.childNodes = [];
     this.append(...nodes);
   }
@@ -2434,7 +2467,25 @@ class MockElement {
   }
   scrollIntoView() {}
   getBoundingClientRect() {
-    return { top: 0, left: 0, width: 0, height: 0, right: 0, bottom: 0 };
+    return cardGeometryRect(this.ownerDocument, this) ?? { top: 0, left: 0, width: 0, height: 0, right: 0, bottom: 0, x: 0, y: 0 };
+  }
+  // Pointer capture (v1.2.0 card drag): one capturing element per pointer
+  // id; a release by the capturing element fires lostpointercapture.
+  setPointerCapture(id) {
+    const doc = this.ownerDocument;
+    if (!doc || !this.isConnected) throw new Error("InvalidStateError: element not connected");
+    const prev = doc._captures.get(Number(id));
+    doc._captures.set(Number(id), this);
+    if (prev && prev !== this) prev.dispatchEvent(new MockEvent("lostpointercapture", { bubbles: true, pointerId: id, isPrimary: true }));
+  }
+  releasePointerCapture(id) {
+    const doc = this.ownerDocument;
+    if (!doc || doc._captures.get(Number(id)) !== this) return;
+    doc._captures.delete(Number(id));
+    this.dispatchEvent(new MockEvent("lostpointercapture", { bubbles: true, pointerId: id, isPrimary: true }));
+  }
+  hasPointerCapture(id) {
+    return this.ownerDocument?._captures.get(Number(id)) === this;
   }
 
   click(init = {}) {
@@ -2519,6 +2570,56 @@ class MockElement {
   }
 }
 
+// Browsers drop focus when the focused element (or an ancestor) leaves the
+// tree, including a move by insertBefore/appendChild: focus goes back to the
+// body with no blur event (the focus fixup rule). Code that moves a focused
+// card must put focus back itself.
+function focusFixup(doc, node) {
+  if (!doc || !node || node.nodeType !== 1) return;
+  const active = doc.activeElement;
+  if (active && active !== doc.body && node.contains(active)) doc.activeElement = doc.body;
+}
+
+// --- Card geometry (v1.2.0). A fixed, deterministic layout for the six
+// cards in #cardsContainer, in document order, so the drag code's
+// getBoundingClientRect() reads have something real to measure: cards are
+// stacked from y=120 with a 16 px gap, 480 px tall expanded and 62 px
+// collapsed, 600 px wide at x=16; the header row's handle and collapse
+// button are 44x44. Rects are viewport-relative (window.scrollY applies).
+// Every other element keeps the all-zero rect.
+const CARD_GEOMETRY = { top: 120, left: 16, width: 600, gap: 16, open: 480, collapsed: 62, header: 62, button: 44 };
+function cardGeometryRect(doc, el) {
+  const container = doc?.getElementById?.("cardsContainer");
+  if (!container || !container.contains(el)) return null;
+  const G = CARD_GEOMETRY;
+  const rect = (top, left, width, height) => ({ top, left, width, height, right: left + width, bottom: top + height, x: left, y: top });
+  const scrollY = Number(doc._window?.scrollY) || 0;
+  let y = G.top - scrollY;
+  const cards = container.children.filter((c) => c.classList.contains("calc-section"));
+  if (el === container) {
+    const total = cards.reduce((h, c) => h + (c.classList.contains("card-collapsed") ? G.collapsed : G.open), 0) + G.gap * Math.max(0, cards.length - 1);
+    return rect(y, G.left, G.width, total);
+  }
+  for (const card of cards) {
+    const h = card.classList.contains("card-collapsed") ? G.collapsed : G.open;
+    if (card === el) return rect(y, G.left, G.width, h);
+    if (card.contains(el)) {
+      if (el.closest(".drag-handle")) return rect(y + (G.header - G.button) / 2, G.left + 12, G.button, G.button);
+      if (el.closest(".collapse-btn")) return rect(y + (G.header - G.button) / 2, G.left + G.width - 12 - G.button, G.button, G.button);
+      if (el.closest(".calc-card-header")) return rect(y, G.left, G.width, G.header);
+      if (el.offsetParent === null) return rect(0, 0, 0, 0);
+      return rect(y + G.header, G.left + 12, G.width - 24, Math.max(0, h - G.header));
+    }
+    y += h + G.gap;
+  }
+  return null;
+}
+// The scrollable height of the page in the geometry model.
+function cardGeometryPageHeight(doc) {
+  const r = cardGeometryRect(doc, doc.getElementById?.("cardsContainer"));
+  return r ? r.height + CARD_GEOMETRY.top * 2 + 400 : 0;
+}
+
 function parseSimple(part) {
   const spec = { tag: null, id: null, classes: [], attrs: [] };
   let rest = part;
@@ -2580,6 +2681,7 @@ class MockDocument {
     this._window = null;
     this._violations = [];
     this._errors = [];
+    this._captures = new Map();
     this.execCalls = [];
     this.visibilityState = "visible";
     this.hidden = false;
@@ -2887,8 +2989,21 @@ function makeWindow(doc, timers, extra) {
       return !ev.defaultPrevented;
     },
     matchMedia: () => ({ matches: false, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} }),
-    scrollTo() {},
-    scrollBy() {},
+    // A phone-sized viewport over the card geometry model; scrolling moves
+    // every card rect and is clamped to the page.
+    innerWidth: 390,
+    innerHeight: 800,
+    scrollY: 0,
+    __scrolls: 0,
+    scrollTo(x, y) {
+      const top = typeof x === "object" && x !== null ? x.top : y;
+      win.scrollY = Math.max(0, Math.min(Number(top) || 0, Math.max(0, cardGeometryPageHeight(doc) - win.innerHeight)));
+    },
+    scrollBy(x, y) {
+      const dy = typeof x === "object" && x !== null ? x.top : y;
+      win.__scrolls++;
+      win.scrollTo(0, win.scrollY + (Number(dy) || 0));
+    },
     requestAnimationFrame: (fn) => timers.setTimeout(fn, 16),
     cancelAnimationFrame: (id) => timers.clearTimeout(id),
     setTimeout: timers.setTimeout,
@@ -2917,6 +3032,7 @@ function baseGlobals(win, timers, doc, errors) {
     CustomEvent: MockEvent,
     KeyboardEvent: MockEvent,
     MouseEvent: MockEvent,
+    PointerEvent: MockEvent,
     URL,
     URLSearchParams,
     TextEncoder,
@@ -3076,9 +3192,11 @@ const HISTORY_INPUT_KEYS = {
 // v1.1.0 adds the history read-only commands (plan A3) and the countdown
 // store (plan A2).
 const NEW_COMMANDS_V110 = ["history_state", "history_retry", "history_reset", "countdown_load", "countdown_save", "countdown_clear"];
+// v1.2.0 adds the card layout store (plan A8).
+const NEW_COMMANDS_V120 = ["layout_load", "layout_save", "layout_reset"];
 const DESKTOP_COMMANDS = new Set([...ENGINE_OPS, "history_list", "history_add", "history_delete", "history_clear",
   "get_settings", "set_settings", "check_for_updates", "open_release_page", "copy_text", "get_app_info",
-  "is_smoke_test", "report_smoke_result", ...NEW_COMMANDS_V110]);
+  "is_smoke_test", "report_smoke_result", ...NEW_COMMANDS_V110, ...NEW_COMMANDS_V120]);
 
 // commands.rs CountdownState + validate_countdown_state, for the stub:
 // exactly these keys (finishedSeenAtMs may be absent: serde Option), schema
@@ -3118,6 +3236,43 @@ function parseCountdownFile(raw) {
   return state ? { state, status: "ok" } : { state: null, status: "corrupt" };
 }
 
+// commands.rs LayoutState + validate_layout_state (plan A8): exactly these
+// three keys (deny_unknown_fields, none optional), schemaVersion 1,
+// cardOrder a permutation of the six card keys, collapsedCards unique valid
+// keys (so at most six).
+const LAYOUT_CARD_KEYS = ["between", "add", "business", "age", "info", "countdown"];
+const LAYOUT_STATE_KEYS = ["schemaVersion", "cardOrder", "collapsedCards"];
+const LAYOUT_MAX_BYTES = 1024;
+function strictLayoutState(v) {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+  const keys = Object.keys(v);
+  if (keys.length !== LAYOUT_STATE_KEYS.length || !LAYOUT_STATE_KEYS.every((k) => Object.hasOwn(v, k))) return null;
+  if (!isU64(v.schemaVersion) || v.schemaVersion !== 1) return null;
+  const { cardOrder, collapsedCards } = v;
+  if (!Array.isArray(cardOrder) || !Array.isArray(collapsedCards)) return null;
+  if (![...cardOrder, ...collapsedCards].every((k) => typeof k === "string")) return null;
+  if (cardOrder.length !== LAYOUT_CARD_KEYS.length || !cardOrder.every((k) => LAYOUT_CARD_KEYS.includes(k)) || new Set(cardOrder).size !== cardOrder.length) return null;
+  if (collapsedCards.length > LAYOUT_CARD_KEYS.length || !collapsedCards.every((k) => LAYOUT_CARD_KEYS.includes(k)) || new Set(collapsedCards).size !== collapsedCards.length) return null;
+  return { schemaVersion: 1, cardOrder: [...cardOrder], collapsedCards: [...collapsedCards] };
+}
+const defaultLayoutState = () => ({ schemaVersion: 1, cardOrder: [...LAYOUT_CARD_KEYS], collapsedCards: [] });
+// commands.rs load_record_from_path for layout.json over the stub disk
+// (after the cap): not JSON or not an object is corrupt; a newer
+// schemaVersion is newer (read before the strict parse); else strict or
+// corrupt.
+function parseLayoutFile(raw) {
+  let value;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return { state: null, status: "corrupt" };
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { state: null, status: "corrupt" };
+  if (declaresNewer(value, 1)) return { state: null, status: "newer" };
+  const state = strictLayoutState(value);
+  return state ? { state, status: "ok" } : { state: null, status: "corrupt" };
+}
+
 async function createDesktopBackend(bridge, timers, opts = {}) {
   const defaultCalendar = (await bridge.result("validate_calendar", { calendar: {} })).calendar;
   let settings = { checkUpdatesOnStartup: true, firstDayOfWeek: "monday", calendar: defaultCalendar, schemaVersion: 1 };
@@ -3133,12 +3288,17 @@ async function createDesktopBackend(bridge, timers, opts = {}) {
     countdown: seed.countdown ?? null,
     countdownBak: seed.countdownBak ?? null,
     countdownUnreadable: Boolean(seed.countdownUnreadable),
+    layout: seed.layout ?? null,
+    layoutBak: seed.layoutBak ?? null,
+    layoutUnreadable: Boolean(seed.layoutUnreadable),
     // Files renamed aside to a fresh `<name>.bak-<ms>` (commands.rs move_aside).
     historyExtraBaks: [...(seed.historyExtraBaks ?? [])],
-    countdownExtraBaks: [...(seed.countdownExtraBaks ?? [])]
+    countdownExtraBaks: [...(seed.countdownExtraBaks ?? [])],
+    layoutExtraBaks: [...(seed.layoutExtraBaks ?? [])]
   };
   let historyReadOnly = null; // null | "read_error" | "too_large" | "corrupt" | "newer_schema"
   let countdownMemory = null; // smoke mode only
+  let layoutMemory = null; // smoke mode only
   const state = {
     calls: [],
     unknown: [],
@@ -3153,7 +3313,10 @@ async function createDesktopBackend(bridge, timers, opts = {}) {
     countdownWrites: 0,
     countdownLog: [],
     failCountdownSave: 0,
-    historyWrites: 0
+    historyWrites: 0,
+    layoutWrites: 0,
+    layoutLog: [],
+    failLayoutSave: 0
   };
   let smokeResolve;
   state.smokeDone = new Promise((r) => (smokeResolve = r));
@@ -3216,6 +3379,43 @@ async function createDesktopBackend(bridge, timers, opts = {}) {
       throw Buffer.byteLength(disk.countdown) <= 64 * 1024 && countdownTextIsNewer(disk.countdown) ? "countdown_newer_schema" : "countdown_unreadable";
     }
     if (countdownTextIsNewer(disk.countdown)) throw "countdown_newer_schema";
+  };
+  // commands.rs record_slot_replaceable for layout.json: a save or reset
+  // replaces only a missing file or a readable v1 record (valid or corrupt).
+  const layoutTextIsNewer = (text) => {
+    try {
+      return declaresNewer(JSON.parse(text), 1);
+    } catch {
+      return false;
+    }
+  };
+  const refuseLayoutSlot = () => {
+    if (disk.layout === null) return;
+    if (disk.layoutUnreadable) throw "layout_unreadable";
+    if (Buffer.byteLength(disk.layout) > LAYOUT_MAX_BYTES) {
+      throw Buffer.byteLength(disk.layout) <= 64 * 1024 && layoutTextIsNewer(disk.layout) ? "layout_newer_schema" : "layout_unreadable";
+    }
+    if (layoutTextIsNewer(disk.layout)) throw "layout_newer_schema";
+  };
+  // commands.rs record_save_with_path: validate, refuse an unwritable slot,
+  // write, and only then update the in-memory copy (smoke: memory only).
+  const saveLayoutRecord = (st, op) => {
+    const text = JSON.stringify(st);
+    if (Buffer.byteLength(text) > LAYOUT_MAX_BYTES) throw "serialized layout exceeds max allowed file size";
+    state.layoutLog.push({ op, state: clone(st), at: timers.now });
+    if (opts.smoke) {
+      layoutMemory = st;
+      return null;
+    }
+    if (state.failLayoutSave > 0) {
+      state.failLayoutSave--;
+      throw "failed to commit file: injected failure";
+    }
+    refuseLayoutSlot();
+    disk.layout = text;
+    disk.layoutUnreadable = false;
+    state.layoutWrites++;
+    return null;
   };
   if (!opts.smoke) applyHistoryLoad(loadHistoryDisk());
   async function dispatch(cmd, args = {}) {
@@ -3341,6 +3541,36 @@ async function createDesktopBackend(bridge, timers, opts = {}) {
         if (disk.countdown !== null) state.countdownWrites++;
         disk.countdown = null;
         return null;
+      case "layout_load": {
+        if (opts.smoke) return layoutMemory ? { state: clone(layoutMemory), status: "ok" } : { state: null, status: "empty" };
+        if (disk.layoutUnreadable) return { state: null, status: "unreadable" };
+        if (disk.layout === null) return { state: null, status: "empty" };
+        if (Buffer.byteLength(disk.layout) > LAYOUT_MAX_BYTES) {
+          // load_oversize_record: a newer record is left alone; anything
+          // else is renamed aside whole (never copied).
+          if (Buffer.byteLength(disk.layout) <= 64 * 1024 && layoutTextIsNewer(disk.layout)) return { state: null, status: "newer" };
+          if (disk.layoutBak === null) disk.layoutBak = disk.layout;
+          else disk.layoutExtraBaks.push(disk.layout);
+          disk.layout = null;
+          return { state: null, status: "corrupt" };
+        }
+        const load = parseLayoutFile(disk.layout);
+        // backup_corrupt_file_once: written when .bak is missing, or holds
+        // different bytes it can still read (at most the cap).
+        if (load.status === "corrupt" && (disk.layoutBak === null || (disk.layoutBak !== disk.layout && Buffer.byteLength(disk.layoutBak) <= LAYOUT_MAX_BYTES))) disk.layoutBak = disk.layout;
+        return load;
+      }
+      case "layout_save": {
+        // Tauri deserializes `state` strictly (deny_unknown_fields), then
+        // validate_layout_state.
+        const st = strictLayoutState(args?.state);
+        if (!st) throw "invalid args `state` for command `layout_save`";
+        return saveLayoutRecord(st, "save");
+      }
+      case "layout_reset":
+        // layout_reset_with_path is a save of the default layout, refused
+        // the same way.
+        return saveLayoutRecord(defaultLayoutState(), "reset");
       case "history_add": {
         const e = args?.entry;
         const keys = e && HISTORY_INPUT_KEYS[e.calculator];
@@ -3976,6 +4206,7 @@ async function runClockSuite(slice, make, ctx) {
 // least one check must fail (a probe that cannot see its mutant is vacuous).
 
 const COUNTDOWN_KEY = "date_tool_countdown_v1";
+const LAYOUT_KEY = "date_tool_layout_v1";
 // The shared wording (ui/main.js and mobile/index.html UI_TEXT, contract).
 const CD_TEXT = {
   counting: (when) => `Counting down to ${when}.`,
@@ -4066,16 +4297,18 @@ function historyAddCalls(sb) {
 function persisted(sb) {
   return sb.surface === "mobile" ? { storage: sb.storage.snapshot() } : { disk: { ...sb.backend.disk } };
 }
-function seedStore(surface, { countdown, countdownBak, countdownUnreadable, history, historyBak, historyReadError } = {}) {
+function seedStore(surface, { countdown, countdownBak, countdownUnreadable, history, historyBak, historyReadError, layout, layoutBak, layoutUnreadable } = {}) {
   if (surface === "mobile") {
     const storage = {};
     if (countdown !== undefined) storage[COUNTDOWN_KEY] = countdown;
     if (countdownBak !== undefined) storage[`${COUNTDOWN_KEY}_bak`] = countdownBak;
     if (history !== undefined) storage[HISTORY_KEY] = history;
     if (historyBak !== undefined) storage[`${HISTORY_KEY}_bak`] = historyBak;
+    if (layout !== undefined) storage[LAYOUT_KEY] = layout;
+    if (layoutBak !== undefined) storage[`${LAYOUT_KEY}_bak`] = layoutBak;
     return { storage };
   }
-  return { disk: { countdown, countdownBak, countdownUnreadable, history, historyBak, historyReadError } };
+  return { disk: { countdown, countdownBak, countdownUnreadable, history, historyBak, historyReadError, layout, layoutBak, layoutUnreadable } };
 }
 
 function cellOf(sb, gridId, iso) {
@@ -4758,6 +4991,863 @@ async function runV110Suite(slice, ctx, make, surface) {
 }
 
 // ============================================================================
+// 12c. v1.2.0 card layout (plan A8), shared by slices B and C
+// ============================================================================
+//
+// Same pattern as 12b: each probe drives fresh sandboxes and reports through
+// `c.check`; slice D runs them again on planted mutants. Drags use pointer
+// events on the handle over the card geometry model of the mini-DOM.
+
+// The shared wording (ui/main.js and mobile/index.html UI_TEXT, contract).
+const LAYOUT_TITLES = { between: "Days Between Two Dates", add: "Add / Subtract", business: "Business Days", age: "Age", info: "Date Info", countdown: "Countdown" };
+const LAYOUT_TEXT = {
+  moved: (title, position, total) => `Moved ${title} to position ${position} of ${total}.`,
+  move: (title) => `Move ${title}`,
+  collapse: (title) => `Collapse ${title}`,
+  expand: (title) => `Expand ${title}`,
+  collapseGlyph: "[ − ]",
+  expandGlyph: "[ + ]",
+  dragTitle: "Drag to reorder",
+  hint: "Drag to move this card, or tap or press it for Move up and Move down buttons. Arrow Up and Arrow Down also move it.",
+  moveUp: "Move up",
+  moveDown: "Move down",
+  moveDone: "Done",
+  resetButton: "Reset card order & expand all",
+  saved: "Card order and collapsed cards are saved on this device.",
+  reset: "Card order reset and every card expanded.",
+  corrupt: "The saved card layout was damaged, so the default layout is used.",
+  newer: "The saved card layout is from a newer version, so it is left untouched. Changes last for this session only.",
+  unreadable: "The saved card layout could not be read, so it is left untouched. Changes last for this session only.",
+  writeFailed: "The card layout could not be saved on this device. Changes last for this session only.",
+  session: "Kept for this session only. This browser is not saving site data."
+};
+const POINTER_ID = 11;
+const layoutRecordText = (order = LAYOUT_CARD_KEYS, collapsed = []) => JSON.stringify({ schemaVersion: 1, cardOrder: order, collapsedCards: collapsed });
+const sameJson = (a, b) => canonical(a) === canonical(b);
+
+function layoutRaw(sb) {
+  return sb.surface === "mobile" ? sb.storage.getItem(LAYOUT_KEY) : sb.backend.disk.layout;
+}
+function layoutBak(sb) {
+  return sb.surface === "mobile" ? sb.storage.getItem(`${LAYOUT_KEY}_bak`) : sb.backend.disk.layoutBak;
+}
+function layoutRecord(sb) {
+  const raw = layoutRaw(sb);
+  if (raw === null) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+}
+function layoutWrites(sb) {
+  return sb.surface === "mobile" ? sb.storage.writesTo(LAYOUT_KEY) : sb.backend.state.layoutWrites;
+}
+// Save/reset attempts that reached the store (desktop: layout_save and
+// layout_reset IPC calls; mobile: accepted setItem calls).
+function layoutSaveAttempts(sb) {
+  if (sb.surface === "mobile") return sb.storage.writesTo(LAYOUT_KEY);
+  return sb.backend.state.calls.filter((x) => x === "layout_save" || x === "layout_reset").length;
+}
+function layoutCard(sb, key) {
+  return sb.doc.getElementById(`card-${key}`);
+}
+function handleOf(sb, key) {
+  return layoutCard(sb, key)?.querySelector(".drag-handle") ?? null;
+}
+function collapseOf(sb, key) {
+  return layoutCard(sb, key)?.querySelector(".collapse-btn") ?? null;
+}
+function domCardOrder(sb) {
+  const container = sb.doc.getElementById("cardsContainer");
+  return container ? container.children.filter((x) => x.classList.contains("calc-section")).map((x) => x.getAttribute("data-calc")) : [];
+}
+function navCardOrder(sb) {
+  return sb.doc.querySelectorAll(".quick-nav .quick-link[data-calc]").map((l) => l.getAttribute("data-calc"));
+}
+// Every pill still points at its own card, and History stays the last pill.
+function navProblems(sb) {
+  const nav = sb.doc.querySelector(".quick-nav");
+  if (!nav) return ["no .quick-nav"];
+  const problems = [];
+  const links = nav.children.filter((x) => x.classList.contains("quick-link"));
+  if (links.length !== 7) problems.push(`${links.length} pills`);
+  if (links[links.length - 1]?.getAttribute("href") !== "#historySection") problems.push("History is not the last pill");
+  for (const l of links.slice(0, -1)) {
+    if (l.getAttribute("href") !== `#card-${l.getAttribute("data-calc")}`) problems.push(`pill ${l.getAttribute("data-calc")} → ${l.getAttribute("href")}`);
+  }
+  if (!sameJson(navCardOrder(sb), domCardOrder(sb))) problems.push(`pills ${navCardOrder(sb)} != cards ${domCardOrder(sb)}`);
+  return problems;
+}
+function collapsedKeys(sb) {
+  return LAYOUT_CARD_KEYS.filter((k) => layoutCard(sb, k)?.classList.contains("card-collapsed"));
+}
+function dragMarks(sb) {
+  return sb.doc.querySelectorAll(".card-dragging, .card-drop-before, .card-drop-after").length;
+}
+// The header row contract, for every card in its current state.
+function headerProblems(sb) {
+  const problems = [];
+  const hint = sb.doc.getElementById("cardMoveHint");
+  for (const key of LAYOUT_CARD_KEYS) {
+    const card = layoutCard(sb, key);
+    if (!card) {
+      problems.push(`#card-${key} missing`);
+      continue;
+    }
+    const title = LAYOUT_TITLES[key];
+    const collapsed = card.classList.contains("card-collapsed");
+    const handle = handleOf(sb, key);
+    const btn = collapseOf(sb, key);
+    const body = sb.doc.getElementById(`card-${key}-body`);
+    if (!handle || handle.tagName !== "BUTTON" || handle.type !== "button") problems.push(`${key}: no <button type=button> drag handle`);
+    else {
+      if (handle.getAttribute("aria-label") !== LAYOUT_TEXT.move(title)) problems.push(`${key}: handle label "${handle.getAttribute("aria-label")}"`);
+      if (handle.getAttribute("aria-describedby") !== "cardMoveHint" || !hint) problems.push(`${key}: handle not described by #cardMoveHint`);
+      if (handle.textContent.trim() !== "⠿") problems.push(`${key}: handle glyph "${handle.textContent}"`);
+    }
+    if (!btn || btn.tagName !== "BUTTON" || btn.type !== "button") {
+      problems.push(`${key}: no <button type=button> collapse button`);
+      continue;
+    }
+    if (btn.getAttribute("aria-expanded") !== String(!collapsed)) problems.push(`${key}: aria-expanded ${btn.getAttribute("aria-expanded")} while collapsed=${collapsed}`);
+    if (btn.getAttribute("aria-controls") !== `card-${key}-body` || !body || !card.contains(body)) problems.push(`${key}: aria-controls does not name the card body`);
+    if (btn.getAttribute("aria-label") !== (collapsed ? LAYOUT_TEXT.expand(title) : LAYOUT_TEXT.collapse(title))) problems.push(`${key}: collapse label "${btn.getAttribute("aria-label")}"`);
+    if (btn.textContent !== (collapsed ? LAYOUT_TEXT.expandGlyph : LAYOUT_TEXT.collapseGlyph)) problems.push(`${key}: collapse glyph "${btn.textContent}"`);
+    if (body && (body.offsetParent === null) !== collapsed) problems.push(`${key}: body rendered=${body.offsetParent !== null} while collapsed=${collapsed}`);
+    if (handle && handle.offsetParent === null) problems.push(`${key}: the handle is not rendered`);
+  }
+  return problems;
+}
+function layoutSummary(sb) {
+  return `cards ${domCardOrder(sb)} / pills ${navCardOrder(sb)} / collapsed ${collapsedKeys(sb)} / stored ${excerpt(String(layoutRaw(sb)), 160)} / writes ${layoutWrites(sb)} / note "${sb.doc.getElementById("layoutStatusText")?.textContent}"`;
+}
+
+function firePointer(el, type, x, y, init = {}) {
+  const ev = new MockEvent(type, {
+    bubbles: true,
+    cancelable: true,
+    pointerId: POINTER_ID,
+    pointerType: "touch",
+    isPrimary: true,
+    button: 0,
+    buttons: type === "pointerup" || type === "pointercancel" ? 0 : 1,
+    clientX: x,
+    clientY: y,
+    ...init
+  });
+  el.dispatchEvent(ev);
+  return ev;
+}
+// Scrolls so the target card sits well inside the 800 px viewport (clear of
+// the 60 px auto-scroll edges at the drop point).
+function bringCardIntoView(sb, key, where) {
+  const r = layoutCard(sb, key).getBoundingClientRect();
+  const want = where === "after" ? 520 - r.height : 300;
+  sb.win.scrollTo(0, sb.win.scrollY + r.top - want);
+}
+// A touch drag of `key`'s handle to just before / after `targetKey`. Returns
+// what was visible mid-drag; `finish: "none"` leaves the pointer down.
+async function pointerDrag(sb, key, targetKey, where, { finish = "up", pointerType = "touch" } = {}) {
+  bringCardIntoView(sb, targetKey, where);
+  const handle = handleOf(sb, key);
+  const hr = handle.getBoundingClientRect();
+  const sx = hr.left + hr.width / 2;
+  const sy = hr.top + hr.height / 2;
+  const down = firePointer(handle, "pointerdown", sx, sy, { pointerType });
+  const captured = handle.hasPointerCapture(POINTER_ID);
+  firePointer(handle, "pointermove", sx + 1, sy + 2, { pointerType });
+  const startedEarly = layoutCard(sb, key).classList.contains("card-dragging");
+  const tr = layoutCard(sb, targetKey).getBoundingClientRect();
+  const x = tr.left + tr.width / 2;
+  const y = where === "before" ? tr.top + 6 : tr.bottom - 6;
+  const move = firePointer(handle, "pointermove", x, y, { pointerType });
+  const during = {
+    captured,
+    startedEarly,
+    dragging: layoutCard(sb, key).classList.contains("card-dragging"),
+    line: layoutCard(sb, targetKey).classList.contains(where === "before" ? "card-drop-before" : "card-drop-after"),
+    lines: sb.doc.querySelectorAll(".card-drop-before, .card-drop-after").length,
+    downPrevented: down.defaultPrevented,
+    movePrevented: move.defaultPrevented
+  };
+  if (finish === "up") firePointer(handle, "pointerup", x, y, { pointerType });
+  await sb.drain();
+  return { ...during, handle, x, y };
+}
+const duringOk = (d) => d.captured && !d.startedEarly && d.dragging && d.line && d.lines === 1 && d.downPrevented && d.movePrevented;
+
+async function probeLayoutCollapsePersist({ make, ctx }, c) {
+  const sb = await make(T_MAIN);
+  const u = uiDriver(sb);
+  c.check(sameJson(domCardOrder(sb), LAYOUT_CARD_KEYS) && collapsedKeys(sb).length === 0 && navProblems(sb).length === 0, () => `launch: ${layoutSummary(sb)} ${navProblems(sb)}`);
+  c.check(headerProblems(sb).length === 0, () => `launch headers: ${headerProblems(sb).join(" | ")}`);
+  c.check(u.text("cardMoveHint") === LAYOUT_TEXT.hint && u.text("layoutStatusText") === LAYOUT_TEXT.saved && u.text("resetLayoutBtn") === LAYOUT_TEXT.resetButton,
+    () => `hint "${u.text("cardMoveHint")}" / note "${u.text("layoutStatusText")}" / reset "${u.text("resetLayoutBtn")}"`);
+  const live = u.must("layoutLiveStatus");
+  c.check(live.getAttribute("role") === "status" && live.getAttribute("aria-live") === "polite" && u.text("layoutLiveStatus") === "", "#layoutLiveStatus is not an empty polite status");
+  c.check(LAYOUT_CARD_KEYS.every((k) => handleOf(sb, k).getAttribute("title") === LAYOUT_TEXT.dragTitle), "a handle lacks the drag tooltip");
+  c.check(layoutRaw(sb) === null && layoutWrites(sb) === 0, "the launch wrote a layout record");
+
+  // Collapse Business Days: its inputs keep their values and its live result
+  // keeps updating while hidden.
+  await u.set("bizStart", "2024-01-01");
+  await u.clickEl(collapseOf(sb, "business"));
+  c.check(sameJson(collapsedKeys(sb), ["business"]) && headerProblems(sb).length === 0, () => `after collapsing: ${collapsedKeys(sb)} ${headerProblems(sb).join(" | ")}`);
+  c.check(sameJson(layoutRecord(sb), { schemaVersion: 1, cardOrder: LAYOUT_CARD_KEYS, collapsedCards: ["business"] }) && layoutWrites(sb) === 1, () => `collapse not saved: ${layoutSummary(sb)}`);
+  await u.set("bizEnd", "2024-01-05");
+  const biz = await ctx.bridge.result("calc_business_days", { startDate: "2024-01-01", endDate: "2024-01-05", includeEndDay: false, calendar: ctx.defaultCalendar });
+  c.check(u.must("bizStart").value === "2024-01-01" && u.text("bizLiveResult") === `→ ${biz.summaryText}`, () => `hidden card: start "${u.must("bizStart").value}", live "${u.text("bizLiveResult")}"`);
+
+  // The countdown ticks on while collapsed: expanding shows the exact value.
+  await u.set("cdTarget", "2026-12-25");
+  await u.clickEl(collapseOf(sb, "countdown"));
+  await sb.advance(7000);
+  await u.clickEl(collapseOf(sb, "countdown"));
+  const r = await cdExpect(ctx, sb.timers.now, "2026-12-25", u.must("cdTime").value);
+  c.check(u.text("cdClock") === r.clockText, () => `expanded countdown "${u.text("cdClock")}" != "${r.clockText}"`);
+  c.check(sameJson(layoutRecord(sb)?.collapsedCards, ["business"]) && layoutWrites(sb) === 3, () => `expand not saved: ${layoutSummary(sb)}`);
+  await u.clickEl(collapseOf(sb, "countdown"));
+  c.check(sameJson(layoutRecord(sb)?.collapsedCards, ["business", "countdown"]), () => `second collapse: ${layoutSummary(sb)}`);
+  cleanRun(c, sb, "layout-collapse-persist");
+
+  // Both stay collapsed at the next launch, which writes nothing.
+  const again = await make(T_MAIN, persisted(sb));
+  c.check(sameJson(collapsedKeys(again), ["business", "countdown"]) && headerProblems(again).length === 0 && layoutWrites(again) === 0,
+    () => `relaunch: ${layoutSummary(again)} ${headerProblems(again).join(" | ")}`);
+  await uiDriver(again).clickEl(collapseOf(again, "business"));
+  c.check(sameJson(layoutRecord(again)?.collapsedCards, ["countdown"]), () => `expand after relaunch: ${layoutSummary(again)}`);
+  const third = await make(T_MAIN, persisted(again));
+  c.check(sameJson(collapsedKeys(third), ["countdown"]) && headerProblems(third).length === 0, () => `third launch: ${layoutSummary(third)}`);
+  cleanRun(c, again, "layout-collapse-persist (relaunch)");
+  cleanRun(c, third, "layout-collapse-persist (third launch)");
+}
+
+async function probeLayoutPointerReorder({ make, surface }, c) {
+  const sb = await make(T_MAIN);
+  const u = uiDriver(sb);
+  const order = (...keys) => keys;
+  // 1. Countdown onto the top of the first card.
+  const d1 = await pointerDrag(sb, "countdown", "between", "before");
+  const o1 = order("countdown", "between", "add", "business", "age", "info");
+  c.check(duringOk(d1), () => `mid-drag (capture, 4 px threshold, dragging class, one gold drop line, default prevented): ${JSON.stringify({ ...d1, handle: undefined })}`);
+  c.check(sameJson(domCardOrder(sb), o1) && navProblems(sb).length === 0 && sameJson(layoutRecord(sb), { schemaVersion: 1, cardOrder: o1, collapsedCards: [] }) && layoutWrites(sb) === 1,
+    () => `drop before the first card: ${layoutSummary(sb)} ${navProblems(sb)}`);
+  c.check(dragMarks(sb) === 0 && !d1.handle.hasPointerCapture(POINTER_ID), "drag classes or the pointer capture were left behind");
+  c.check(u.text("layoutLiveStatus") === LAYOUT_TEXT.moved("Countdown", 1, 6), () => `announcement "${u.text("layoutLiveStatus")}"`);
+  // 2. Add / Subtract after the last card (a mouse this time).
+  const d2 = await pointerDrag(sb, "add", "info", "after", { pointerType: "mouse" });
+  const o2 = order("countdown", "between", "business", "age", "info", "add");
+  c.check(duringOk(d2) && sameJson(domCardOrder(sb), o2) && navProblems(sb).length === 0 && sameJson(layoutRecord(sb)?.cardOrder, o2) && layoutWrites(sb) === 2,
+    () => `drop after the last card: ${layoutSummary(sb)}`);
+  c.check(u.text("layoutLiveStatus") === LAYOUT_TEXT.moved("Add / Subtract", 6, 6), () => `announcement "${u.text("layoutLiveStatus")}"`);
+  // 3. Onto a collapsed card: the collapsed set is kept.
+  await u.clickEl(collapseOf(sb, "age"));
+  const d3 = await pointerDrag(sb, "between", "age", "after", { pointerType: "pen" });
+  const o3 = order("countdown", "business", "age", "between", "info", "add");
+  c.check(duringOk(d3) && sameJson(domCardOrder(sb), o3) && sameJson(layoutRecord(sb), { schemaVersion: 1, cardOrder: o3, collapsedCards: ["age"] }) && layoutWrites(sb) === 4,
+    () => `drop after a collapsed card: ${layoutSummary(sb)}`);
+
+  // 4. Nothing moves or saves: a tap under the 4 px threshold, Escape,
+  // pointercancel, a lost capture, the window losing focus, a non-primary
+  // pointer and a secondary button.
+  const w = layoutWrites(sb);
+  const h = handleOf(sb, "info");
+  const hr = h.getBoundingClientRect();
+  firePointer(h, "pointerdown", hr.left + 5, hr.top + 5);
+  firePointer(h, "pointermove", hr.left + 7, hr.top + 7);
+  firePointer(h, "pointerup", hr.left + 7, hr.top + 7);
+  await sb.drain();
+  c.check(sameJson(domCardOrder(sb), o3) && layoutWrites(sb) === w && dragMarks(sb) === 0, () => `a tap moved the card: ${layoutSummary(sb)}`);
+  const cancels = {
+    escape: () => sb.doc.dispatchEvent(new MockEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })),
+    pointercancel: (d) => firePointer(d.handle, "pointercancel", d.x, d.y),
+    lostpointercapture: (d) => d.handle.dispatchEvent(new MockEvent("lostpointercapture", { bubbles: true, pointerId: POINTER_ID, isPrimary: true })),
+    "window blur": () => sb.win.dispatchEvent(new MockEvent("blur"))
+  };
+  for (const [how, cancel] of Object.entries(cancels)) {
+    const d = await pointerDrag(sb, "info", "countdown", "before", { finish: "none" });
+    c.check(d.dragging && d.line, `${how}: the drag did not start`);
+    cancel(d);
+    firePointer(d.handle, "pointerup", d.x, d.y);
+    await sb.drain();
+    c.check(sameJson(domCardOrder(sb), o3) && layoutWrites(sb) === w && dragMarks(sb) === 0, () => `${how} did not cancel the drag: ${layoutSummary(sb)}`);
+  }
+  for (const [how, init] of [["non-primary pointer", { isPrimary: false }], ["secondary button", { button: 2, pointerType: "mouse" }]]) {
+    const t = layoutCard(sb, "countdown").getBoundingClientRect();
+    firePointer(h, "pointerdown", hr.left + 5, hr.top + 5, init);
+    firePointer(h, "pointermove", t.left + 50, t.top + 6, init);
+    c.check(!layoutCard(sb, "info").classList.contains("card-dragging"), `${how} started a drag`);
+    firePointer(h, "pointerup", t.left + 50, t.top + 6, init);
+    await sb.drain();
+    c.check(sameJson(domCardOrder(sb), o3) && layoutWrites(sb) === w, () => `${how} moved a card: ${layoutSummary(sb)}`);
+  }
+  // A second finger's events never steer or end the drag; the first finger drops.
+  const d4 = await pointerDrag(sb, "info", "countdown", "before", { finish: "none" });
+  firePointer(handleOf(sb, "add"), "pointerdown", d4.x, d4.y, { pointerId: 12, isPrimary: false });
+  firePointer(d4.handle, "pointerup", d4.x, d4.y + 900, { pointerId: 12 });
+  c.check(layoutCard(sb, "info").classList.contains("card-dragging") && !layoutCard(sb, "add").classList.contains("card-dragging"), "a second pointer ended or took over the drag");
+  firePointer(d4.handle, "pointerup", d4.x, d4.y);
+  await sb.drain();
+  const o4 = order("info", "countdown", "business", "age", "between", "add");
+  c.check(sameJson(domCardOrder(sb), o4) && sameJson(layoutRecord(sb)?.cardOrder, o4) && layoutWrites(sb) === w + 1, () => `two pointers: ${layoutSummary(sb)}`);
+
+  // 5. Holding near the bottom or top edge scrolls the page while dragging.
+  sb.win.scrollTo(0, 400);
+  const top0 = sb.win.scrollY;
+  const eh = handleOf(sb, "business");
+  const er = eh.getBoundingClientRect();
+  firePointer(eh, "pointerdown", er.left + 5, er.top + 5);
+  firePointer(eh, "pointermove", er.left + 5, sb.win.innerHeight - 10);
+  await sb.advance(200, 50);
+  const down = sb.win.scrollY;
+  firePointer(eh, "pointermove", er.left + 5, 10);
+  await sb.advance(400, 50);
+  const up = sb.win.scrollY;
+  sb.doc.dispatchEvent(new MockEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+  await sb.advance(200, 50);
+  const settled = sb.win.scrollY;
+  await sb.advance(200, 50);
+  c.check(down > top0 && up < down && sb.win.scrollY === settled, () => `edge auto-scroll: ${top0} → ${down} → ${up}, then ${settled} → ${sb.win.scrollY} after Escape`);
+  c.check(sameJson(domCardOrder(sb), o4) && dragMarks(sb) === 0, () => `edge scroll moved a card: ${layoutSummary(sb)}`);
+  cleanRun(c, sb, `layout-pointer-reorder (${surface})`);
+
+  // 6. The order is restored at the next launch, pills included.
+  const again = await make(T_MAIN, persisted(sb));
+  c.check(sameJson(domCardOrder(again), o4) && navProblems(again).length === 0 && sameJson(collapsedKeys(again), ["age"]) && layoutWrites(again) === 0, () => `relaunch: ${layoutSummary(again)}`);
+  cleanRun(c, again, "layout-pointer-reorder (relaunch)");
+}
+
+async function probeLayoutKeyboardReorder({ make }, c) {
+  const sb = await make(T_MAIN);
+  const u = uiDriver(sb);
+  const focusName = () => {
+    const a = sb.doc.activeElement;
+    return a?.id || a?.getAttribute?.("aria-label") || a?.tagName;
+  };
+  const h = handleOf(sb, "business");
+  h.focus();
+  let ev = await pressKey(sb, h, "ArrowUp");
+  const o1 = ["between", "business", "add", "age", "info", "countdown"];
+  c.check(ev.defaultPrevented && sameJson(domCardOrder(sb), o1) && navProblems(sb).length === 0 && sameJson(layoutRecord(sb)?.cardOrder, o1) && layoutWrites(sb) === 1,
+    () => `ArrowUp: ${layoutSummary(sb)}`);
+  c.check(sb.doc.activeElement === h, () => `focus after ArrowUp is on ${focusName()}, not the Business Days handle`);
+  c.check(u.text("layoutLiveStatus") === LAYOUT_TEXT.moved("Business Days", 2, 6), () => `announcement "${u.text("layoutLiveStatus")}"`);
+  await pressKey(sb, h, "ArrowDown");
+  ev = await pressKey(sb, h, "ArrowDown");
+  const o2 = ["between", "add", "age", "business", "info", "countdown"];
+  c.check(ev.defaultPrevented && sameJson(domCardOrder(sb), o2) && navProblems(sb).length === 0 && sameJson(layoutRecord(sb)?.cardOrder, o2) && layoutWrites(sb) === 3,
+    () => `ArrowDown twice: ${layoutSummary(sb)}`);
+  c.check(sb.doc.activeElement === h && u.text("layoutLiveStatus") === LAYOUT_TEXT.moved("Business Days", 4, 6), () => `after ArrowDown: focus ${focusName()}, "${u.text("layoutLiveStatus")}"`);
+  // At the ends: no move and no write; the position is announced again,
+  // even when the same text repeats.
+  const top = handleOf(sb, "between");
+  top.focus();
+  await pressKey(sb, top, "ArrowUp");
+  c.check(sameJson(domCardOrder(sb), o2) && layoutWrites(sb) === 3 && sb.doc.activeElement === top && u.text("layoutLiveStatus") === LAYOUT_TEXT.moved(LAYOUT_TITLES.between, 1, 6),
+    () => `ArrowUp at the top: ${layoutSummary(sb)} / "${u.text("layoutLiveStatus")}"`);
+  await pressKey(sb, top, "ArrowUp");
+  await sb.advance(200, 50);
+  c.check(u.text("layoutLiveStatus") === LAYOUT_TEXT.moved(LAYOUT_TITLES.between, 1, 6) && layoutWrites(sb) === 3, () => `repeated announcement "${u.text("layoutLiveStatus")}"`);
+  const bottom = handleOf(sb, "countdown");
+  bottom.focus();
+  await pressKey(sb, bottom, "ArrowDown");
+  c.check(sameJson(domCardOrder(sb), o2) && layoutWrites(sb) === 3 && sb.doc.activeElement === bottom && u.text("layoutLiveStatus") === LAYOUT_TEXT.moved("Countdown", 6, 6),
+    () => `ArrowDown at the bottom: ${layoutSummary(sb)} / "${u.text("layoutLiveStatus")}"`);
+  // A move to the front keeps focus on the moved handle too.
+  for (let i = 0; i < 5; i++) await pressKey(sb, bottom, "ArrowUp");
+  c.check(domCardOrder(sb)[0] === "countdown" && sb.doc.activeElement === bottom && u.text("layoutLiveStatus") === LAYOUT_TEXT.moved("Countdown", 1, 6) && layoutWrites(sb) === 8,
+    () => `Countdown to the front: ${layoutSummary(sb)} / focus ${focusName()}`);
+  // Modified arrows and other keys do nothing.
+  const before = domCardOrder(sb);
+  for (const [key, shift] of [["ArrowUp", true], ["ArrowDown", true], ["ArrowLeft", false], ["ArrowRight", false]]) {
+    const e = await pressKey(sb, h, key, shift);
+    c.check(sameJson(domCardOrder(sb), before) && layoutWrites(sb) === 8 && !e.defaultPrevented, () => `${shift ? "Shift+" : ""}${key} on a handle: ${layoutSummary(sb)}`);
+  }
+  cleanRun(c, sb, "layout-keyboard-reorder");
+  const again = await make(T_MAIN, persisted(sb));
+  c.check(sameJson(domCardOrder(again), before) && navProblems(again).length === 0, () => `relaunch: ${layoutSummary(again)}`);
+}
+
+async function probeLayoutNavFollowsOrder({ make, surface }, c) {
+  const order = ["info", "countdown", "age", "business", "add", "between"];
+  const raw = layoutRecordText(order, ["age"]);
+  const sb = await make(T_MAIN, seedStore(surface, { layout: raw }));
+  const u = uiDriver(sb);
+  c.check(sameJson(domCardOrder(sb), order) && sameJson(navCardOrder(sb), order) && navProblems(sb).length === 0, () => `stored order at launch: ${layoutSummary(sb)} ${navProblems(sb)}`);
+  c.check(sameJson(collapsedKeys(sb), ["age"]) && headerProblems(sb).length === 0, () => `stored collapsed set at launch: ${collapsedKeys(sb)} ${headerProblems(sb).join(" | ")}`);
+  c.check(layoutRaw(sb) === raw && layoutWrites(sb) === 0 && u.text("layoutStatusText") === LAYOUT_TEXT.saved, () => `launch wrote or noted: ${layoutSummary(sb)}`);
+  c.check(sb.doc.activeElement?.id === "infoDate", () => `launch focus on ${sb.doc.activeElement?.id}, not the first card's first input`);
+  u.must("betweenStart").focus();
+  await u.click("clearAllBtn");
+  c.check(sb.doc.activeElement?.id === "infoDate", () => `clear-all focus on ${sb.doc.activeElement?.id}`);
+  // The pills follow every keyboard move; History stays last.
+  const h = handleOf(sb, "between");
+  for (let i = 0; i < 5; i++) {
+    await pressKey(sb, h, "ArrowUp");
+    c.check(navProblems(sb).length === 0, () => `after move ${i + 1}: ${navProblems(sb).join(" | ")}`);
+  }
+  const moved = ["between", "info", "countdown", "age", "business", "add"];
+  c.check(sameJson(domCardOrder(sb), moved) && sameJson(navCardOrder(sb), moved) && sameJson(layoutRecord(sb)?.cardOrder, moved), () => `after the moves: ${layoutSummary(sb)}`);
+  await u.click("clearAllBtn");
+  c.check(sb.doc.activeElement?.id === "betweenStart", () => `clear-all focus after the move: ${sb.doc.activeElement?.id}`);
+  // A pointer drop moves the pill too.
+  await pointerDrag(sb, "add", "info", "before");
+  const dropped = ["between", "add", "info", "countdown", "age", "business"];
+  c.check(sameJson(navCardOrder(sb), dropped) && navProblems(sb).length === 0, () => `pills after a drop: ${navCardOrder(sb)}`);
+  cleanRun(c, sb, "layout-nav-follows-order");
+  // Every card collapsed: launch focus goes to the first card's collapse button.
+  const all = await make(T_MAIN, seedStore(surface, { layout: layoutRecordText(order, LAYOUT_CARD_KEYS) }));
+  c.check(all.doc.activeElement === collapseOf(all, "info") && sameJson(navCardOrder(all), order), () => `all collapsed: focus ${all.doc.activeElement?.getAttribute?.("aria-label")}, pills ${navCardOrder(all)}`);
+  cleanRun(c, all, "layout-nav-follows-order (all collapsed)");
+}
+
+async function probeLayoutOpenExpands({ make, surface }, c) {
+  const sb = await make(T_MAIN);
+  const u = uiDriver(sb);
+  const pill = (k) => sb.doc.querySelector(`.quick-nav .quick-link[data-calc="${k}"]`);
+  // 1. Its quick-nav pill opens a collapsed card (and saves that).
+  await u.clickEl(collapseOf(sb, "info"));
+  await u.clickEl(pill("info"));
+  c.check(collapsedKeys(sb).length === 0 && sb.win.location.hash === "#card-info" && sameJson(layoutRecord(sb)?.collapsedCards, []) && headerProblems(sb).length === 0,
+    () => `quick-nav: hash ${sb.win.location.hash} / ${layoutSummary(sb)}`);
+  const w = layoutWrites(sb);
+  await u.clickEl(pill("age"));
+  c.check(layoutWrites(sb) === w && collapsedKeys(sb).length === 0, "the pill of an expanded card wrote the layout");
+  // 2. A history restore opens its collapsed card.
+  await u.set("infoDate", "2024-02-29");
+  await u.enter("infoDate");
+  await u.set("infoDate", "2024-03-01");
+  await u.clickEl(collapseOf(sb, "info"));
+  const restore = u.must("historyList").querySelector(".history-restore-btn");
+  c.check(Boolean(restore), "no history entry to restore");
+  if (restore) await u.clickEl(restore);
+  c.check(collapsedKeys(sb).length === 0 && u.must("infoDate").value === "2024-02-29" && sameJson(layoutRecord(sb)?.collapsedCards, []) && headerProblems(sb).length === 0,
+    () => `history restore: date ${u.must("infoDate").value} / ${layoutSummary(sb)}`);
+  // 3. Focus returning from Settings to an Edit-calendar link opens its card.
+  for (const [btnId, key] of [["bizCalendarEditBtn", "business"], ["addCalendarEditBtn", "add"]]) {
+    const btn = u.must(btnId);
+    await u.clickEl(btn);
+    c.check(!u.hidden("settingsModal"), `${btnId} did not open Settings`);
+    // Collapsed while Settings is open (another tab, or a layout reset).
+    await u.clickEl(collapseOf(sb, key));
+    c.check(sameJson(collapsedKeys(sb), [key]), `${key} did not collapse behind Settings`);
+    await u.click("closeSettingsBtn");
+    c.check(collapsedKeys(sb).length === 0 && sb.doc.activeElement === btn && sameJson(layoutRecord(sb)?.collapsedCards, []),
+      () => `${btnId} focus return: focus ${sb.doc.activeElement?.id} / ${layoutSummary(sb)}`);
+  }
+  cleanRun(c, sb, `layout-open-expands (${surface})`);
+}
+
+async function probeLayoutReset({ make, surface }, c) {
+  const sb = await make(T_MAIN);
+  const u = uiDriver(sb);
+  await pressKey(sb, handleOf(sb, "countdown"), "ArrowUp");
+  await pressKey(sb, handleOf(sb, "age"), "ArrowUp");
+  await u.clickEl(collapseOf(sb, "business"));
+  await u.clickEl(collapseOf(sb, "countdown"));
+  await u.set("cdTarget", "2026-12-25");
+  c.check(!sameJson(domCardOrder(sb), LAYOUT_CARD_KEYS) && collapsedKeys(sb).length === 2, () => `setup: ${layoutSummary(sb)}`);
+  await u.click("settingsBtn");
+  await u.click("resetLayoutBtn");
+  c.check(sameJson(domCardOrder(sb), LAYOUT_CARD_KEYS) && navProblems(sb).length === 0 && collapsedKeys(sb).length === 0 && headerProblems(sb).length === 0,
+    () => `after reset: ${layoutSummary(sb)} ${headerProblems(sb).join(" | ")}`);
+  c.check(sameJson(layoutRecord(sb), defaultLayoutState()), () => `reset record: ${layoutRaw(sb)}`);
+  c.check(u.text("layoutStatusText") === LAYOUT_TEXT.reset && !u.must("layoutStatusText").classList.contains("is-error"), () => `reset note "${u.text("layoutStatusText")}"`);
+  c.check(u.must("cdTarget").value === "2026-12-25" && u.must("bizStart").value === "", "reset changed a card's inputs");
+  if (surface === "desktop") c.check(sb.backend.state.layoutLog.at(-1)?.op === "reset", "reset did not go through layout_reset");
+  // The next change replaces the reset note.
+  await u.click("closeSettingsBtn");
+  await u.clickEl(collapseOf(sb, "age"));
+  c.check(u.text("layoutStatusText") === LAYOUT_TEXT.saved && sameJson(layoutRecord(sb)?.collapsedCards, ["age"]), () => `after the next change: ${layoutSummary(sb)}`);
+  await u.click("resetLayoutBtn");
+  cleanRun(c, sb, `layout-reset (${surface})`);
+  const again = await make(T_MAIN, persisted(sb));
+  const ua = uiDriver(again);
+  c.check(sameJson(domCardOrder(again), LAYOUT_CARD_KEYS) && collapsedKeys(again).length === 0 && ua.text("layoutStatusText") === LAYOUT_TEXT.saved && layoutWrites(again) === 0,
+    () => `relaunch after reset: ${layoutSummary(again)}`);
+  // A reset with nothing saved yet still writes the default record.
+  const fresh = await make(T_MAIN);
+  await uiDriver(fresh).click("resetLayoutBtn");
+  c.check(sameJson(layoutRecord(fresh), defaultLayoutState()) && layoutWrites(fresh) === 1, () => `reset on an empty store: ${layoutSummary(fresh)}`);
+  cleanRun(c, fresh, "layout-reset (empty store)");
+}
+
+async function probeLayoutBadRecords({ make, surface }, c) {
+  const rec = (o = {}) => JSON.stringify({ schemaVersion: 1, cardOrder: [...LAYOUT_CARD_KEYS], collapsedCards: [], ...o });
+  const defaultsShown = (sb) => sameJson(domCardOrder(sb), LAYOUT_CARD_KEYS) && sameJson(navCardOrder(sb), LAYOUT_CARD_KEYS) && collapsedKeys(sb).length === 0;
+  const isError = (sb) => sb.doc.getElementById("layoutStatusText").classList.contains("is-error");
+  // Invalid records: backed up once, the default layout, writable again.
+  const bad = [
+    rec({ cardOrder: LAYOUT_CARD_KEYS.slice(0, 5) }),
+    rec({ cardOrder: ["between", "between", "business", "age", "info", "countdown"] }),
+    rec({ cardOrder: ["between", "add", "business", "age", "info", "history"] }),
+    rec({ cardOrder: [...LAYOUT_CARD_KEYS, "percent"] }),
+    rec({ cardOrder: [1, 2, 3, 4, 5, 6] }),
+    rec({ cardOrder: "between,add,business,age,info,countdown" }),
+    rec({ collapsedCards: ["history"] }),
+    rec({ collapsedCards: ["age", "age"] }),
+    rec({ collapsedCards: ["__proto__"] }),
+    rec({ collapsedCards: null }),
+    rec({ pinned: ["age"] }),
+    rec({ schemaVersion: "1" }),
+    rec({ schemaVersion: 0 }),
+    JSON.stringify({ schemaVersion: 1, cardOrder: [...LAYOUT_CARD_KEYS] }),
+    JSON.stringify({ cardOrder: [...LAYOUT_CARD_KEYS], collapsedCards: [] }),
+    "[1]",
+    "null",
+    "{not json"
+  ];
+  for (const v of bad) {
+    const sb = await make(T_MAIN, seedStore(surface, { layout: v }));
+    const u = uiDriver(sb);
+    c.check(defaultsShown(sb) && headerProblems(sb).length === 0 && navProblems(sb).length === 0, () => `invalid ${excerpt(v, 70)}: ${layoutSummary(sb)}`);
+    c.check(layoutBak(sb) === v && layoutRaw(sb) === v && layoutWrites(sb) === 0, () => `invalid ${excerpt(v, 70)}: bak ${layoutBak(sb) === v}, raw kept ${layoutRaw(sb) === v}, writes ${layoutWrites(sb)}`);
+    c.check(u.text("layoutStatusText") === LAYOUT_TEXT.corrupt && !isError(sb), () => `invalid ${excerpt(v, 40)}: note "${u.text("layoutStatusText")}"`);
+    if (v === bad[1]) {
+      await u.clickEl(collapseOf(sb, "age"));
+      c.check(sameJson(layoutRecord(sb), { schemaVersion: 1, cardOrder: LAYOUT_CARD_KEYS, collapsedCards: ["age"] }) && layoutBak(sb) === v && u.text("layoutStatusText") === LAYOUT_TEXT.saved,
+        () => `a change after a corrupt record: ${layoutSummary(sb)}`);
+      const again = await make(T_MAIN, persisted(sb));
+      c.check(sameJson(collapsedKeys(again), ["age"]) && layoutBak(again) === v, "the replacement was not restored, or the backup was rewritten");
+    }
+    cleanRun(c, sb, `invalid layout ${excerpt(v, 40)}`);
+  }
+  // A valid record is never backed up.
+  let sb = await make(T_MAIN, seedStore(surface, { layout: rec() }));
+  c.check(layoutBak(sb) === null && uiDriver(sb).text("layoutStatusText") === LAYOUT_TEXT.saved, "a valid record was backed up or flagged");
+
+  // Over the 1 KiB cap: corrupt on both surfaces (desktop renames it aside
+  // whole, mobile copies it to _bak), and the store stays writable.
+  const big = rec({ pad: "x".repeat(1100) });
+  sb = await make(T_MAIN, seedStore(surface, { layout: big }));
+  let u = uiDriver(sb);
+  c.check(defaultsShown(sb) && u.text("layoutStatusText") === LAYOUT_TEXT.corrupt && layoutBak(sb) === big, () => `oversize: ${layoutSummary(sb)} / bak ${layoutBak(sb) === big}`);
+  await u.clickEl(collapseOf(sb, "info"));
+  c.check(sameJson(layoutRecord(sb)?.collapsedCards, ["info"]) && layoutBak(sb) === big, () => `oversize then a change: ${layoutSummary(sb)}`);
+
+  // A newer-version record (also one over the cap): the default layout for
+  // the session, never written, reset or backed up.
+  const newer = '{"schemaVersion":2,"cardOrder":["countdown","info"],"collapsedCards":[],"pinned":["age"]}';
+  const newerBig = JSON.stringify({ schemaVersion: 3, cardOrder: [], collapsedCards: [], pad: "y".repeat(2000) });
+  for (const v of [newer, newerBig]) {
+    sb = await make(T_MAIN, seedStore(surface, { layout: v }));
+    u = uiDriver(sb);
+    c.check(defaultsShown(sb) && u.text("layoutStatusText") === LAYOUT_TEXT.newer && isError(sb), () => `newer ${excerpt(v, 40)}: ${layoutSummary(sb)}`);
+    await u.clickEl(collapseOf(sb, "age"));
+    c.check(u.text("layoutLiveStatus") === "", () => `newer: a blocked change announced "${u.text("layoutLiveStatus")}"`);
+    await pressKey(sb, handleOf(sb, "info"), "ArrowUp");
+    await pointerDrag(sb, "between", "countdown", "after");
+    await u.click("resetLayoutBtn");
+    await u.clickEl(collapseOf(sb, "business"));
+    c.check(sameJson(collapsedKeys(sb), ["business"]) && u.text("layoutStatusText") === LAYOUT_TEXT.newer, () => `newer: the session layout ${layoutSummary(sb)}`);
+    c.check(layoutRaw(sb) === v && layoutBak(sb) === null && layoutWrites(sb) === 0 && layoutSaveAttempts(sb) === 0,
+      () => `newer ${excerpt(v, 40)}: raw kept ${layoutRaw(sb) === v}, bak ${layoutBak(sb)}, writes ${layoutWrites(sb)}, attempts ${layoutSaveAttempts(sb)}`);
+    const again = await make(T_MAIN, persisted(sb));
+    c.check(defaultsShown(again) && uiDriver(again).text("layoutStatusText") === LAYOUT_TEXT.newer, () => `newer, relaunch: ${layoutSummary(again)}`);
+    cleanRun(c, sb, `newer layout ${excerpt(v, 30)}`);
+  }
+
+  // A newer record that appears after launch: the store refuses the save,
+  // the UI says so once and stops writing.
+  sb = await make(T_MAIN);
+  u = uiDriver(sb);
+  if (surface === "mobile") sb.storage.external(LAYOUT_KEY, newer);
+  else sb.backend.disk.layout = newer;
+  await u.clickEl(collapseOf(sb, "age"));
+  c.check(layoutRaw(sb) === newer && u.text("layoutStatusText") === LAYOUT_TEXT.newer && isError(sb) && u.text("layoutLiveStatus") === LAYOUT_TEXT.newer,
+    () => `late newer record: ${layoutSummary(sb)} / live "${u.text("layoutLiveStatus")}"`);
+  const attempts = layoutSaveAttempts(sb);
+  await u.clickEl(collapseOf(sb, "age"));
+  await u.click("resetLayoutBtn");
+  c.check(layoutRaw(sb) === newer && layoutSaveAttempts(sb) === attempts && layoutBak(sb) === null, () => `after the refusal: ${layoutSummary(sb)}, attempts ${layoutSaveAttempts(sb) - attempts}`);
+  cleanRun(c, sb, "late newer layout");
+
+  // Desktop: a file that cannot be read (locked) is never touched; one that
+  // turns unreadable after launch is refused.
+  if (surface === "desktop") {
+    sb = await make(T_MAIN, seedStore(surface, { layout: rec({ collapsedCards: ["age"] }), layoutUnreadable: true }));
+    u = uiDriver(sb);
+    c.check(defaultsShown(sb) && u.text("layoutStatusText") === LAYOUT_TEXT.unreadable && isError(sb), () => `unreadable: ${layoutSummary(sb)}`);
+    await u.clickEl(collapseOf(sb, "info"));
+    await u.click("resetLayoutBtn");
+    c.check(layoutRaw(sb) === rec({ collapsedCards: ["age"] }) && layoutBak(sb) === null && layoutSaveAttempts(sb) === 0, () => `unreadable: ${layoutSummary(sb)}`);
+    sb = await make(T_MAIN);
+    u = uiDriver(sb);
+    sb.backend.disk.layout = rec();
+    sb.backend.disk.layoutUnreadable = true;
+    await u.clickEl(collapseOf(sb, "info"));
+    c.check(u.text("layoutStatusText") === LAYOUT_TEXT.unreadable && layoutRaw(sb) === rec(), () => `late unreadable: ${layoutSummary(sb)}`);
+    // An over-cap file with .bak taken goes to a fresh name, never over it.
+    sb = await make(T_MAIN, seedStore(surface, { layout: big, layoutBak: "older backup" }));
+    c.check(layoutBak(sb) === "older backup" && sameJson(sb.backend.disk.layoutExtraBaks, [big]) && layoutRaw(sb) === null, () => `oversize with .bak taken: extra ${sb.backend.disk.layoutExtraBaks.length}`);
+  }
+
+  // A failed save: the layout stays applied, the note and one announcement
+  // say it was not saved, and the next change retries.
+  sb = await make(T_MAIN);
+  u = uiDriver(sb);
+  if (surface === "desktop") sb.backend.state.failLayoutSave = 1;
+  else sb.storage.refuse.add(LAYOUT_KEY);
+  await u.clickEl(collapseOf(sb, "age"));
+  c.check(sameJson(collapsedKeys(sb), ["age"]) && layoutRaw(sb) === null && u.text("layoutStatusText") === LAYOUT_TEXT.writeFailed && isError(sb) && u.text("layoutLiveStatus") === LAYOUT_TEXT.writeFailed,
+    () => `failed save: ${layoutSummary(sb)} / live "${u.text("layoutLiveStatus")}"`);
+  if (surface === "mobile") sb.storage.refuse.delete(LAYOUT_KEY);
+  await u.clickEl(collapseOf(sb, "info"));
+  c.check(sameJson(layoutRecord(sb)?.collapsedCards, ["age", "info"]) && u.text("layoutStatusText") === LAYOUT_TEXT.saved && !isError(sb), () => `retry after a failed save: ${layoutSummary(sb)}`);
+  cleanRun(c, sb, "failed layout save");
+
+  // Mobile with site data blocked: the layout works for the session and the
+  // note says it is not kept.
+  if (surface === "mobile") {
+    sb = await make(T_MAIN, { storageBlocked: true });
+    u = uiDriver(sb);
+    c.check(u.text("layoutStatusText") === LAYOUT_TEXT.session, () => `blocked storage note "${u.text("layoutStatusText")}"`);
+    await u.clickEl(collapseOf(sb, "age"));
+    await pressKey(sb, handleOf(sb, "info"), "ArrowUp");
+    c.check(sameJson(collapsedKeys(sb), ["age"]) && domCardOrder(sb)[3] === "info" && u.text("layoutStatusText") === LAYOUT_TEXT.session, () => `blocked storage: ${layoutSummary(sb)}`);
+    c.check(sb.errors.length === 0 && sb.doc._errors.length === 0, () => `blocked storage errors: ${[...sb.errors, ...sb.doc._errors].join(" | ")}`);
+  }
+}
+
+async function probeLayoutStorageEvent({ make }, c) {
+  const sb = await make(T_MAIN);
+  const u = uiDriver(sb);
+  const otherTab = async (value, area = sb.storage) => {
+    sb.storage.external(LAYOUT_KEY, value);
+    sb.win.dispatchEvent(new MockEvent("storage", { key: LAYOUT_KEY, storageArea: area }));
+    await sb.drain();
+  };
+  // Another tab's order and collapsed set are adopted without writing, and
+  // focus stays where it was even though its card moved.
+  u.must("addStart").focus();
+  const o1 = ["countdown", "add", "between", "business", "age", "info"];
+  await otherTab(layoutRecordText(o1, ["age"]));
+  c.check(sameJson(domCardOrder(sb), o1) && navProblems(sb).length === 0 && sameJson(collapsedKeys(sb), ["age"]) && headerProblems(sb).length === 0, () => `adopt: ${layoutSummary(sb)}`);
+  c.check(sb.doc.activeElement === u.must("addStart"), () => `focus after another tab's move: ${sb.doc.activeElement?.id}`);
+  c.check(layoutWrites(sb) === 0, "adopting another tab's layout wrote");
+  // Focus inside a card another tab collapses moves to its collapse button.
+  u.must("bizStart").focus();
+  await otherTab(layoutRecordText(o1, ["age", "business"]));
+  c.check(sameJson(collapsedKeys(sb), ["business", "age"]) && sb.doc.activeElement === collapseOf(sb, "business"), () => `another tab collapsed the focused card: collapsed ${collapsedKeys(sb)}, focus on ${sb.doc.activeElement?.getAttribute?.("aria-label") || sb.doc.activeElement?.id}`);
+  // Mid-drag the event is ignored; the drop saves this tab's order.
+  const d = await pointerDrag(sb, "info", "countdown", "before", { finish: "none" });
+  await otherTab(layoutRecordText(LAYOUT_CARD_KEYS, []));
+  c.check(sameJson(domCardOrder(sb), o1) && layoutCard(sb, "info").classList.contains("card-dragging"), () => `an event mid-drag was applied: ${layoutSummary(sb)}`);
+  firePointer(d.handle, "pointerup", d.x, d.y);
+  await sb.drain();
+  const o2 = ["info", "countdown", "add", "between", "business", "age"];
+  c.check(sameJson(domCardOrder(sb), o2) && sameJson(layoutRecord(sb), { schemaVersion: 1, cardOrder: o2, collapsedCards: ["age", "business"] }) && layoutWrites(sb) === 1,
+    () => `the drop after an ignored event: ${layoutSummary(sb)}`);
+  // A clear in another tab: the defaults, nothing written.
+  await otherTab(null);
+  c.check(sameJson(domCardOrder(sb), LAYOUT_CARD_KEYS) && collapsedKeys(sb).length === 0 && layoutRaw(sb) === null && layoutWrites(sb) === 1, () => `clear in another tab: ${layoutSummary(sb)}`);
+  // A newer-version record from another tab blocks writes here too.
+  const newer = '{"schemaVersion":2,"cardOrder":[],"collapsedCards":[]}';
+  await otherTab(newer);
+  c.check(u.text("layoutStatusText") === LAYOUT_TEXT.newer, () => `newer from another tab: note "${u.text("layoutStatusText")}"`);
+  await u.clickEl(collapseOf(sb, "age"));
+  c.check(layoutRaw(sb) === newer && layoutWrites(sb) === 1 && layoutBak(sb) === null, () => `newer from another tab was overwritten: ${layoutSummary(sb)}`);
+  // A valid record again: adopted, and writable again.
+  await otherTab(layoutRecordText(LAYOUT_CARD_KEYS, ["info"]));
+  c.check(sameJson(collapsedKeys(sb), ["info"]) && u.text("layoutStatusText") === LAYOUT_TEXT.saved, () => `valid again: ${layoutSummary(sb)}`);
+  await u.clickEl(collapseOf(sb, "info"));
+  c.check(sameJson(layoutRecord(sb)?.collapsedCards, []) && layoutWrites(sb) === 2, () => `write after valid again: ${layoutSummary(sb)}`);
+  // An event from another storage area is ignored.
+  await otherTab(layoutRecordText(o1, ["between"]), new MemoryStorage());
+  c.check(sameJson(domCardOrder(sb), LAYOUT_CARD_KEYS) && collapsedKeys(sb).length === 0, () => `another storage area: ${layoutSummary(sb)}`);
+  cleanRun(c, sb, "layout-storage-event");
+}
+
+// Phone-first touch safety (v1.2.0 review): a wobbly tap on a handle near a
+// screen edge never starts a drag, scrolls the page or moves a card; a touch
+// drag needs 10 px (a mouse 4 px); edge auto-scroll arms only after 24 px of
+// travel or a 300 ms hold; and a drop keeps focus that was inside the card.
+async function probeLayoutTouchSafety({ make, surface }, c) {
+  const sb = await make(T_MAIN);
+  const u = uiDriver(sb);
+  const announced0 = u.text("layoutLiveStatus");
+  // Date Info's handle about 52 px from the top: inside the 60 px edge zone.
+  const placeNearTop = () => {
+    const r = handleOf(sb, "info").getBoundingClientRect();
+    sb.win.scrollTo(0, sb.win.scrollY + r.top - 30);
+    const h = handleOf(sb, "info").getBoundingClientRect();
+    return { x: h.left + h.width / 2, y: h.top + h.height / 2 };
+  };
+  const unchanged = () => sameJson(domCardOrder(sb), LAYOUT_CARD_KEYS) && layoutWrites(sb) === 0 && dragMarks(sb) === 0 && u.text("layoutLiveStatus") === announced0;
+  const h = handleOf(sb, "info");
+  for (const [label, dx, dy] of [["a 4 px wobble", 3, 3], ["an 8 px wobble", 6, -5]]) {
+    const p = placeNearTop();
+    const y0 = sb.win.scrollY;
+    firePointer(h, "pointerdown", p.x, p.y);
+    firePointer(h, "pointermove", p.x + dx, p.y + dy);
+    const dragging = layoutCard(sb, "info").classList.contains("card-dragging");
+    await sb.advance(150, 16);
+    firePointer(h, "pointerup", p.x + dx, p.y + dy);
+    await sb.drain();
+    c.check(!dragging && sb.win.scrollY === y0 && unchanged(), () => `touch tap with ${label} near the top edge: dragging=${dragging}, scroll ${y0} → ${sb.win.scrollY}, ${layoutSummary(sb)}`);
+  }
+  // A quick 12 px touch drag near the edge starts, but neither scrolls nor moves.
+  {
+    const p = placeNearTop();
+    const y0 = sb.win.scrollY;
+    firePointer(h, "pointerdown", p.x, p.y);
+    firePointer(h, "pointermove", p.x + 12, p.y);
+    const dragging = layoutCard(sb, "info").classList.contains("card-dragging");
+    await sb.advance(200, 16);
+    firePointer(h, "pointerup", p.x + 12, p.y);
+    await sb.drain();
+    c.check(dragging && sb.win.scrollY === y0 && unchanged(), () => `a quick 12 px touch drag near the edge: dragging=${dragging}, scroll ${y0} → ${sb.win.scrollY}, ${layoutSummary(sb)}`);
+  }
+  // A mouse starts at 4 px; a touch at 6 px does not.
+  for (const [pointerType, want] of [["touch", false], ["pen", false], ["mouse", true]]) {
+    const r = handleOf(sb, "business").getBoundingClientRect();
+    const x = r.left + r.width / 2;
+    const y = 300;
+    sb.win.scrollTo(0, sb.win.scrollY + r.top + r.height / 2 - y);
+    const hb = handleOf(sb, "business");
+    firePointer(hb, "pointerdown", x, y, { pointerType });
+    firePointer(hb, "pointermove", x + 6, y, { pointerType });
+    const dragging = layoutCard(sb, "business").classList.contains("card-dragging");
+    sb.doc.dispatchEvent(new MockEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    firePointer(hb, "pointerup", x + 6, y, { pointerType });
+    await sb.drain();
+    c.check(dragging === want && unchanged(), () => `${pointerType} 6 px: dragging=${dragging} (want ${want}), ${layoutSummary(sb)}`);
+  }
+  // Holding a started drag at the edge for 300 ms arms the auto-scroll.
+  {
+    const p = placeNearTop();
+    const y0 = sb.win.scrollY;
+    firePointer(h, "pointerdown", p.x, p.y);
+    firePointer(h, "pointermove", p.x + 12, p.y - 20);
+    await sb.advance(200, 16);
+    const early = sb.win.scrollY;
+    await sb.advance(300, 16);
+    const held = sb.win.scrollY;
+    sb.doc.dispatchEvent(new MockEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    firePointer(h, "pointerup", p.x + 12, p.y - 20);
+    await sb.drain();
+    c.check(early === y0 && held < y0 && unchanged(), () => `hold at the top edge: ${y0} → ${early} (200 ms) → ${held} (500 ms), ${layoutSummary(sb)}`);
+  }
+  // A drop keeps focus that was inside the dragged card: an input, or its
+  // collapse button.
+  u.must("ageBirth").focus();
+  await pointerDrag(sb, "age", "business", "before");
+  const o1 = ["between", "add", "age", "business", "info", "countdown"];
+  c.check(sameJson(domCardOrder(sb), o1) && sb.doc.activeElement?.id === "ageBirth", () => `drop with ageBirth focused: focus on ${sb.doc.activeElement?.id || sb.doc.activeElement?.tagName}, ${layoutSummary(sb)}`);
+  collapseOf(sb, "countdown").focus();
+  await pointerDrag(sb, "countdown", "between", "before");
+  c.check(domCardOrder(sb)[0] === "countdown" && sb.doc.activeElement === collapseOf(sb, "countdown"), () => `drop with the collapse button focused: focus on ${sb.doc.activeElement?.getAttribute?.("aria-label") || sb.doc.activeElement?.tagName}`);
+  cleanRun(c, sb, `layout-touch-safety (${surface})`);
+}
+
+// The move menu (WCAG 2.5.7): a tap, click or Enter on a handle opens Move up
+// / Move down / Done under the card's title row, so a phone screen-reader user
+// can reorder cards with single taps; the click that ends a real drag does not.
+async function probeLayoutMoveMenu({ make, surface }, c) {
+  const sb = await make(T_MAIN);
+  const u = uiDriver(sb);
+  const menu = () => sb.doc.getElementById("cardMoveMenu");
+  const isOpen = () => Boolean(menu()) && menu().offsetParent !== null;
+  const btn = (action) => menu()?.querySelector(`.card-move-btn[data-move="${action}"]`) ?? null;
+  const focusName = () => sb.doc.activeElement?.textContent?.trim() || sb.doc.activeElement?.getAttribute?.("aria-label") || sb.doc.activeElement?.id || sb.doc.activeElement?.tagName;
+  c.check(Boolean(menu()) && !isOpen() && sb.doc.querySelectorAll(".card-move-menu").length === 1, "the move menu is missing, open at launch or duplicated");
+  const hb = handleOf(sb, "business");
+  await u.clickEl(hb);
+  const buttons = menu()?.querySelectorAll(".card-move-btn") ?? [];
+  c.check(isOpen() && layoutCard(sb, "business").contains(menu()) && menu().getAttribute("role") === "group" && menu().getAttribute("aria-label") === LAYOUT_TEXT.move("Business Days"),
+    () => `open: ${isOpen()} in business=${layoutCard(sb, "business").contains(menu())} role ${menu()?.getAttribute("role")} label "${menu()?.getAttribute("aria-label")}"`);
+  c.check(buttons.length === 3 && buttons.every((b) => b.tagName === "BUTTON" && b.type === "button") && sameJson(buttons.map((b) => b.textContent), [LAYOUT_TEXT.moveUp, LAYOUT_TEXT.moveDown, LAYOUT_TEXT.moveDone]),
+    () => `buttons: ${buttons.map((b) => `${b.tagName}/${b.type}/"${b.textContent}"`).join(", ")}`);
+  c.check(sb.doc.activeElement === btn("up") && layoutWrites(sb) === 0, () => `focus after opening is on ${focusName()}, writes ${layoutWrites(sb)}`);
+  // Move up, then down twice: each saves, announces and keeps focus.
+  await u.clickEl(btn("up"));
+  const o1 = ["between", "business", "add", "age", "info", "countdown"];
+  c.check(sameJson(domCardOrder(sb), o1) && navProblems(sb).length === 0 && sameJson(layoutRecord(sb)?.cardOrder, o1) && layoutWrites(sb) === 1 && u.text("layoutLiveStatus") === LAYOUT_TEXT.moved("Business Days", 2, 6),
+    () => `Move up: ${layoutSummary(sb)} / "${u.text("layoutLiveStatus")}"`);
+  c.check(sb.doc.activeElement === btn("up") && isOpen() && layoutCard(sb, "business").contains(menu()), () => `after Move up: focus ${focusName()}, open ${isOpen()}`);
+  await u.clickEl(btn("down"));
+  await u.clickEl(btn("down"));
+  const o2 = ["between", "add", "age", "business", "info", "countdown"];
+  c.check(sameJson(domCardOrder(sb), o2) && sameJson(layoutRecord(sb)?.cardOrder, o2) && layoutWrites(sb) === 3 && u.text("layoutLiveStatus") === LAYOUT_TEXT.moved("Business Days", 4, 6) && sb.doc.activeElement === btn("down"),
+    () => `Move down twice: ${layoutSummary(sb)} / focus ${focusName()}`);
+  // Done closes and returns focus to the handle.
+  await u.clickEl(btn("done"));
+  c.check(!isOpen() && sb.doc.activeElement === hb && layoutWrites(sb) === 3, () => `Done: open ${isOpen()}, focus ${focusName()}`);
+  // The handle toggles; Escape in the menu closes it onto the handle.
+  await u.clickEl(hb);
+  await u.clickEl(hb);
+  c.check(!isOpen() && sb.doc.activeElement === hb, () => `second handle click: open ${isOpen()}, focus ${focusName()}`);
+  await u.clickEl(hb);
+  const esc = await pressKey(sb, btn("down"), "Escape");
+  c.check(!isOpen() && sb.doc.activeElement === hb && esc.defaultPrevented, () => `Escape: open ${isOpen()}, focus ${focusName()}`);
+  // Another card's handle moves the one menu there; a pointer elsewhere closes it.
+  await u.clickEl(hb);
+  const ha = handleOf(sb, "age");
+  const ar = ha.getBoundingClientRect();
+  firePointer(ha, "pointerdown", ar.left + 5, ar.top + 5);
+  firePointer(ha, "pointerup", ar.left + 5, ar.top + 5);
+  await u.clickEl(ha);
+  c.check(isOpen() && layoutCard(sb, "age").contains(menu()) && sb.doc.querySelectorAll(".card-move-menu").length === 1 && menu().getAttribute("aria-label") === LAYOUT_TEXT.move("Age"),
+    () => `menu on Age: open ${isOpen()}, in age=${layoutCard(sb, "age").contains(menu())}, label "${menu()?.getAttribute("aria-label")}"`);
+  firePointer(u.must("betweenStart"), "pointerdown", 100, 100, { pointerType: "mouse" });
+  c.check(!isOpen(), "a pointer outside did not close the menu");
+  // It works on a collapsed card too, and the collapsed set is kept.
+  await u.clickEl(collapseOf(sb, "info"));
+  await u.clickEl(handleOf(sb, "info"));
+  await u.clickEl(btn("up"));
+  const o3 = ["between", "add", "age", "info", "business", "countdown"];
+  c.check(sameJson(layoutRecord(sb), { schemaVersion: 1, cardOrder: o3, collapsedCards: ["info"] }) && sb.doc.activeElement === btn("up") && headerProblems(sb).length === 0,
+    () => `collapsed card: ${layoutSummary(sb)} ${headerProblems(sb).join(" | ")}`);
+  await u.clickEl(btn("done"));
+  // The click that ends a real drag opens nothing; the next tap does.
+  const w = layoutWrites(sb);
+  const d = await pointerDrag(sb, "countdown", "between", "before");
+  await u.clickEl(d.handle);
+  c.check(!isOpen() && domCardOrder(sb)[0] === "countdown" && layoutWrites(sb) === w + 1, () => `click after a drag: open ${isOpen()}, ${layoutSummary(sb)}`);
+  const cr = d.handle.getBoundingClientRect();
+  firePointer(d.handle, "pointerdown", cr.left + 5, cr.top + 5);
+  firePointer(d.handle, "pointerup", cr.left + 6, cr.top + 6);
+  await u.clickEl(d.handle);
+  c.check(isOpen() && layoutCard(sb, "countdown").contains(menu()), () => `tap after the drag: open ${isOpen()}`);
+  // At the top, Move up is marked unavailable (aria-disabled, so focus stays);
+  // moving down makes it available again.
+  c.check(btn("up")?.getAttribute("aria-disabled") === "true" && btn("down")?.getAttribute("aria-disabled") === null && btn("up")?.disabled !== true,
+    () => `edges at the top: up=${btn("up")?.getAttribute("aria-disabled")} down=${btn("down")?.getAttribute("aria-disabled")}`);
+  await u.clickEl(btn("down"));
+  c.check(btn("up")?.getAttribute("aria-disabled") === null && domCardOrder(sb)[1] === "countdown",
+    () => `after moving off the top: up=${btn("up")?.getAttribute("aria-disabled")} ${layoutSummary(sb)}`);
+  // Settings reset closes it.
+  await u.click("resetLayoutBtn");
+  c.check(!isOpen() && sameJson(domCardOrder(sb), LAYOUT_CARD_KEYS), () => `after reset: open ${isOpen()}, ${layoutSummary(sb)}`);
+  cleanRun(c, sb, `layout-move-menu (${surface})`);
+}
+
+const V120_PROBES = [
+  ["layout-collapse-persist", "every card header has a ⠿ <button> handle (\"Move <title>\", described by #cardMoveHint) and a [ − ]/[ + ] collapse <button> (aria-expanded, aria-controls=card-<key>-body, \"Collapse/Expand <title>\"); collapsing hides only the body (inputs keep their values, live results keep updating, the countdown shows the exact value on expand), each change saves {schemaVersion 1, cardOrder, collapsedCards}, the launch writes nothing and restores the collapsed set", probeLayoutCollapsePersist],
+  ["layout-pointer-reorder", "a touch, mouse or pen drag on the handle (pointer capture, a 4 px mouse / 10 px touch and pen start threshold, the dragging class and one gold drop line, default prevented) reorders the cards, the quick-nav pills and the store, announces \"Moved <title> to position N of 6.\", and leaves no class or capture behind; a tap, Escape, pointercancel, a lost capture, window blur, a non-primary pointer, a secondary button and a second finger never move anything; holding near an edge auto-scrolls; no inline style is ever set; the order is restored at the next launch", probeLayoutPointerReorder],
+  ["layout-touch-safety", "phone first: a touch tap that wobbles 4 or 8 px on a handle 52 px from the top edge starts no drag, scrolls nothing and moves nothing; a quick 12 px touch drag there neither scrolls nor moves; a 6 px move starts a drag with a mouse only (touch and pen need 10 px); edge auto-scroll arms only after 24 px of travel or a 300 ms hold; a drop keeps focus that was inside the dragged card (an input, its collapse button)", probeLayoutTouchSafety],
+  ["layout-move-menu", "WCAG 2.5.7 single-pointer alternative: a tap, click or Enter on a handle opens one Move up / Move down / Done group (role group, \"Move <title>\") under that card's title row with focus on Move up; each move saves, announces \"Moved <title> to position N of 6.\" and keeps focus on the pressed button; Done, a second handle tap and Escape close it onto the handle; another handle moves it there; a pointer elsewhere and the Settings reset close it; it works on a collapsed card; the click that ends a real drag opens nothing", probeLayoutMoveMenu],
+  ["layout-keyboard-reorder", "ArrowUp/ArrowDown on a focused handle move its card one place, save, keep focus on that handle (also when the move takes it out of the tree) and announce the position; at either end nothing moves or saves and the position is announced again; modified arrows and other keys do nothing", probeLayoutKeyboardReorder],
+  ["layout-nav-follows-order", "a stored order and collapsed set apply at launch before the first render (cards and pills, History last, every pill still pointing at its card, nothing written); launch and clear-all focus go to the first input of the first expanded card in that order, or to the first card's collapse button when all are collapsed; every move keeps the pills in step", probeLayoutNavFollowsOrder],
+  ["layout-open-expands", "opening a collapsed card expands it and saves that: from its quick-nav pill, from a history restore, and when focus returns from Settings to an Edit-calendar link inside it; a pill of an expanded card writes nothing", probeLayoutOpenExpands],
+  ["layout-reset", "Settings → Layout → \"Reset card order & expand all\" restores the default order and expands every card (pills and headers too) without touching any input, writes the default record (through layout_reset on desktop), shows the reset note until the next change, and the next launch reads the defaults; a reset on an empty store also writes the default record; localStorage.clear() is never used", probeLayoutReset],
+  ["layout-bad-records", "invalid layout records (a missing, repeated or unknown card, seven cards, non-string or non-array fields, unknown or repeated collapsed keys, an extra field, a missing field, schemaVersion \"1\" or 0, not an object, not JSON) are backed up once, show the default layout with the damaged note and are replaced by the next change; an over-cap record is backed up (desktop: renamed aside whole, to a fresh name when .bak is taken) and the store stays writable; a newer-version record (also over the cap) shows the defaults with the newer note and is never written, reset or backed up; one that appears after launch is refused, announced once and never retried; a locked desktop file is never touched; a failed save keeps the layout, says so once and the next change retries; blocked site data keeps the layout for the session with the session note", probeLayoutBadRecords]
+];
+
+async function runV120Suite(slice, ctx, make, surface) {
+  const P = { make, ctx, surface };
+  for (const [id, desc, probe] of V120_PROBES) {
+    const crit = slice.criterion(id, `${surface}: ${desc}`);
+    await guard(crit, id, () => probe(P, crit));
+  }
+  if (surface === "mobile") {
+    const crit = slice.criterion("layout-storage-event", "mobile: another tab's layout write, clear or newer-version record is adopted without writing (focus kept, or moved to the collapse button of a card collapsed under it), ignored mid-drag (the drop then saves this tab's order), and events from another storage area are ignored");
+    await guard(crit, "layout storage event", () => probeLayoutStorageEvent(P, crit));
+  }
+}
+
+// ============================================================================
 // 13. Slice B: mobile UI
 // ============================================================================
 
@@ -4768,6 +5858,7 @@ async function runSliceB(slice, ctx) {
   ctx.mobileSnaps = await runUiSuite(slice, sb, ctx);
   await runClockSuite(slice, make, ctx);
   await runV110Suite(slice, ctx, make, "mobile");
+  await runV120Suite(slice, ctx, make, "mobile");
 
   // v1.1.0 (plan A3): corrupt stored history is no longer replaced by an
   // empty, writable one. It is copied to _bak and history turns read-only
@@ -5101,6 +6192,7 @@ async function runSliceC(slice, ctx) {
   const snaps = await runUiSuite(slice, sb, ctx);
   await runClockSuite(slice, make, ctx);
   await runV110Suite(slice, ctx, make, "desktop");
+  await runV120Suite(slice, ctx, make, "desktop");
 
   const ipc = slice.criterion("ipc-routing", "every invoke is a registered Tauri command, every engine command reached the Rust bridge as {req}, and nothing fell back to JS math");
   await guard(ipc, "ipc", async () => {
@@ -5110,6 +6202,7 @@ async function runSliceC(slice, ctx) {
     ipc.check(st.bridgeCalls > 20, () => `only ${st.bridgeCalls} engine calls`);
     ipc.check(st.calls.includes("check_for_updates"), "startup update check not requested via IPC");
     ipc.check(st.calls.includes("countdown_load") && st.calls.includes("history_state"), "the launch did not ask for the saved countdown and the history state over IPC");
+    ipc.check(st.calls.includes("layout_load"), "the launch did not ask for the saved card layout over IPC");
   });
 
   const cross = slice.criterion("cross-surface-text", "for the same inputs and virtual clock, the desktop (Rust over IPC) and mobile (JS mirror) cards render identical result, live and trace text");
@@ -5559,7 +6652,8 @@ function outCellProblems(files) {
 // --- Phone first: on a coarse pointer every v1.1.0 control is at least
 // 44 px tall (day cells, the pick toggle, the month/Today buttons, Forget,
 // and the history banner's retry / start-a-new-history buttons).
-const TOUCH_SELECTORS = [".mini-cal-cell", ".cal-pick-opt", ".mini-cal-nav", ".link-btn", ".calc-btn", ".reset-btn"];
+// v1.2.0 (plan A8) adds the card handle and collapse button.
+const TOUCH_SELECTORS = [".mini-cal-cell", ".cal-pick-opt", ".mini-cal-nav", ".link-btn", ".calc-btn", ".reset-btn", ".drag-handle", ".collapse-btn", ".card-move-btn"];
 function mediaBlock(css, query) {
   const start = css.indexOf(`@media ${query} {`);
   if (start < 0) return null;
@@ -5582,6 +6676,41 @@ function touchTargetProblems(files) {
     for (const sel of TOUCH_SELECTORS) {
       const ok = rules.some((r) => r.selectors.includes(sel) && /min-height\s*:\s*(?:4[4-9]|[5-9]\d)px/.test(r.body));
       if (!ok) problems.push(`${name}: ${sel} has no min-height of at least 44px on a coarse pointer`);
+    }
+  }
+  return { problems };
+}
+
+// --- Plan A8, phone first: the card layout is CSS classes only, so its
+// look lives in the stylesheets. The handle alone has touch-action: none
+// (the page still scrolls everywhere else), a collapsed card hides only its
+// body, the drop line is gold before or after the card, the handle and the
+// collapse button are 44x44 on a coarse pointer, and reduced motion turns
+// their transitions off.
+function layoutCssProblems(files) {
+  const problems = [];
+  for (const [name, raw] of Object.entries(files)) {
+    const css = raw.replace(/\/\*[\s\S]*?\*\//g, "");
+    const top = cssRules(css.replace(/@media[^{]*\{(?:[^{}]*\{[^{}]*\})*[^{}]*\}/g, ""));
+    const has = (rules, sel, re) => rules.some((r) => r.selectors.includes(sel) && re.test(r.body));
+    if (!has(top, ".drag-handle", /touch-action\s*:\s*none/)) problems.push(`${name}: .drag-handle lacks touch-action: none`);
+    const touchNone = top.filter((r) => /touch-action\s*:\s*none/.test(r.body)).flatMap((r) => r.selectors);
+    if (touchNone.some((s) => s !== ".drag-handle")) problems.push(`${name}: touch-action: none outside the handle (${touchNone.join(", ")})`);
+    if (!has(top, ".calc-section.card-collapsed .calc-card-body", /display\s*:\s*none/)) problems.push(`${name}: a collapsed card does not hide its body`);
+    if (top.some((r) => r.selectors.some((s) => /\.card-collapsed(?![\w-])/.test(s) && !/\.calc-card-body|\.calc-card-header|\.section-(?:title|subtitle)/.test(s)) && /display\s*:\s*none/.test(r.body))) problems.push(`${name}: a collapsed card hides more than its body`);
+    for (const sel of [".calc-section.card-drop-before", ".calc-section.card-drop-after"]) {
+      if (!has(top, sel, /#E9A715/i)) problems.push(`${name}: ${sel} is not a gold line`);
+    }
+    if (!top.some((r) => r.selectors.includes(".calc-section.card-dragging"))) problems.push(`${name}: no .card-dragging look`);
+    const coarse = mediaBlock(css, "(pointer: coarse)");
+    const coarseRules = coarse === null ? [] : cssRules(coarse);
+    for (const sel of [".drag-handle", ".collapse-btn"]) {
+      if (!has(coarseRules, sel, /min-width\s*:\s*(?:4[4-9]|[5-9]\d)px/) || !has(coarseRules, sel, /min-height\s*:\s*(?:4[4-9]|[5-9]\d)px/)) problems.push(`${name}: ${sel} is not 44x44 on a coarse pointer`);
+    }
+    const reduced = mediaBlock(css, "(prefers-reduced-motion: reduce)");
+    const reducedRules = reduced === null ? [] : cssRules(reduced);
+    for (const sel of [".drag-handle", ".collapse-btn"]) {
+      if (!has(reducedRules, sel, /transition\s*:\s*none/)) problems.push(`${name}: ${sel} keeps its transition under reduced motion`);
     }
   }
   return { problems };
@@ -5614,7 +6743,27 @@ const UI_MUTANTS = [
   ["restored chip kept on every tick", BOTH, 'else if (restoreRender) phase = "restored";', 'else if (restoredNow) phase = "restored";', probeCountdownRestoreFuture],
   ["saved note shown even when the save fails", BOTH, /if \(cdStored === state\) \{\n\s*cdStored = previous\.stored;\n\s*cdLoadStatus = previous\.status;\n\s*\}\n\s*onCountdownWriteFailed\(err\);/, "renderCountdownNote();", probeCountdownBadRecords],
   ["clear all forgets the saved countdown", BOTH, "resetCard(key, { forget: false })", "resetCard(key)", probeCountdownReset],
-  ["new-history reset drops a value that is not backed up", ["mobile"], "if (kept !== raw) {", "if (kept === null) {", probeHistoryReadOnly]
+  ["new-history reset drops a value that is not backed up", ["mobile"], "if (kept !== raw) {", "if (kept === null) {", probeHistoryReadOnly],
+  // v1.2.0 card layout (plan A8).
+  ["collapse not saved", BOTH, "  if (!collapsed) onCardExpanded(key);\n  if (save) saveLayout();\n", "  if (!collapsed) onCardExpanded(key);\n", probeLayoutCollapsePersist],
+  ["quick-nav not synced with the card order", BOTH, "  syncQuickNav(state.cardOrder);\n", "", probeLayoutNavFollowsOrder],
+  ["reset leaves a card collapsed", BOTH, /(finishCardDrag\(true\);\n\s*)layoutState = defaultLayout\(\);/, "$1layoutState = { ...defaultLayout(), collapsedCards: layoutState.collapsedCards.slice(0, 1) };", probeLayoutReset],
+  [".style set during a drag", ["mobile"], 'cardDrag.card.classList.add("card-dragging");', 'cardDrag.card.classList.add("card-dragging");\n      cardDrag.card.style.opacity = "0.55";', probeLayoutPointerReorder],
+  ["localStorage.clear() used by the layout reset", ["mobile"], "function layoutReset() {\n", "function layoutReset() {\n  storageArea()?.clear();\n", probeLayoutReset],
+  ["keyboard move drops focus", BOTH, "  if (handle && document.activeElement !== handle) handle.focus({ preventScroll: true });\n", "", probeLayoutKeyboardReorder],
+  ["history restore keeps its card collapsed", BOTH, "  // A collapsed card opens for the restore (and that is saved).\n  expandCard(key);\n", "", probeLayoutOpenExpands],
+  ["drop target ignores the after half", BOTH, "cardDrag.after = y >= (target.rect.top + target.rect.bottom) / 2;", "cardDrag.after = false;", probeLayoutPointerReorder],
+  ["a newer layout record is not blocked at launch", ["desktop"], /(if \(status === "newer" \|\| status === "unreadable"\) \{\n\s*layoutLoadStatus = status;\n\s*)layoutStoreBlocked = true;/, "$1layoutStoreBlocked = false;", probeLayoutBadRecords],
+  ["mobile layout store writes over a newer record", ["mobile"], '  if (storedLayoutIsNewer()) throw new Error("layout_newer_schema");\n', "", probeLayoutBadRecords],
+  ["other-tab layout sync removed", ["mobile"], /\n\s*syncLayoutFromStorage\(\);\n/, "\n", probeLayoutStorageEvent],
+  ["other-tab layout applied mid-drag", ["mobile"], "function syncLayoutFromStorage() {\n  if (cardDrag) return;\n", "function syncLayoutFromStorage() {\n", probeLayoutStorageEvent],
+  // v1.2.0 review fixes: touch safety, drop focus, the move menu.
+  ["a touch drag starts at 4 px", BOTH, 'const threshold = cardDrag.pointerType === "mouse" ? DRAG_START_PX : DRAG_START_TOUCH_PX;', "const threshold = DRAG_START_PX;", probeLayoutTouchSafety],
+  ["edge auto-scroll armed at once", BOTH, "const DRAG_EDGE_ARM_PX = 24;", "const DRAG_EDGE_ARM_PX = 0;", probeLayoutTouchSafety],
+  ["a pointer drop drops focus", BOTH, "  if (hadFocus) {\n", "  if (false) {\n", probeLayoutTouchSafety],
+  ["a handle tap opens no move menu", BOTH, "else openCardMoveMenu(key);", "else return;", probeLayoutMoveMenu],
+  ["the click ending a drag opens the move menu", BOTH, "  if (drag.moved) cardDragClickGuard = drag.handle;\n", "", probeLayoutMoveMenu],
+  ["a menu move drops focus", BOTH, "  if (focusEl?.isConnected && document.activeElement !== focusEl) focusEl.focus({ preventScroll: true });\n", "", probeLayoutMoveMenu]
 ];
 
 async function runUiMutants(crit, ctx) {
@@ -5695,7 +6844,7 @@ async function runSliceD(slice, ctx) {
     desk.check(!/\b(?:fetch|XMLHttpRequest|WebSocket|EventSource)\s*\(/.test(main.replace(/\/\/.*$/gm, "")), "ui/main.js does network I/O directly");
   }
 
-  const cmds = slice.criterion("command-allowlist", "every invoke(\"…\") and engine(\"…\") name in ui/main.js is a command registered in src-tauri/src/main.rs, engine() only names the nine date-core ops, the v1.1.0 history_state/retry/reset and countdown_load/save/clear commands are registered, invoked and defined as #[tauri::command], and the mobile script fetches only the GitHub Releases API");
+  const cmds = slice.criterion("command-allowlist", "every invoke(\"…\") and engine(\"…\") name in ui/main.js is a command registered in src-tauri/src/main.rs, engine() only names the nine date-core ops, the v1.1.0 history_state/retry/reset and countdown_load/save/clear and the v1.2.0 layout_load/save/reset commands are registered, invoked and defined as #[tauri::command] (with the layout_newer_schema / layout_unreadable refusals and the 1024-byte cap the UI and this evaluation expect), and the mobile script fetches only the GitHub Releases API");
   {
     const main = readText("ui/main.js");
     const rs = readText("src-tauri/src/main.rs");
@@ -5708,6 +6857,15 @@ async function runSliceD(slice, ctx) {
       cmds.check(registered.has(c) && invoked.has(c), () => `v1.1.0 command ${c}: registered=${registered.has(c)} invoked=${invoked.has(c)}`);
       cmds.check(new RegExp(`#\\[tauri::command\\]\\s*pub fn ${c}\\(`).test(commandsRs), () => `commands.rs has no #[tauri::command] pub fn ${c}`);
     }
+    for (const c of NEW_COMMANDS_V120) {
+      cmds.check(registered.has(c) && invoked.has(c) && DESKTOP_COMMANDS.has(c), () => `v1.2.0 command ${c}: registered=${registered.has(c)} invoked=${invoked.has(c)}`);
+      cmds.check(new RegExp(`#\\[tauri::command\\]\\s*pub fn ${c}\\(`).test(commandsRs), () => `commands.rs has no #[tauri::command] pub fn ${c}`);
+    }
+    // The refusals the UI keys on are the ones commands.rs returns.
+    cmds.check(/pub const LAYOUT_NEWER_SCHEMA: &str = "layout_newer_schema";/.test(commandsRs) && /pub const LAYOUT_UNREADABLE: &str = "layout_unreadable";/.test(commandsRs),
+      "commands.rs layout refusal strings differ from layout_newer_schema / layout_unreadable");
+    cmds.check(main.includes('reason.includes("layout_newer_schema")') && main.includes('reason.includes("layout_unreadable")'), "ui/main.js does not key the layout refusals on layout_newer_schema / layout_unreadable");
+    cmds.check(/const LAYOUT_MAX_FILE_BYTES: usize = 1024;/.test(commandsRs) && LAYOUT_MAX_BYTES === 1024, "layout.json cap is not 1024 bytes in commands.rs and this evaluation");
     for (const c of invoked) cmds.check(registered.has(c) && DESKTOP_COMMANDS.has(c), () => `invoke("${c}") is not registered`);
     for (const c of engined) cmds.check(ENGINE_OPS.includes(c) && registered.has(c), () => `engine("${c}") is not an engine command`);
     for (const c of registered) cmds.check(DESKTOP_COMMANDS.has(c), () => `registered command ${c} is unknown to this evaluation`);
@@ -5836,7 +6994,20 @@ async function runSliceD(slice, ctx) {
     ]);
   });
 
-  const mutants = slice.criterion("ui-mutant-proofs", "the v1.1.0 calendar, countdown and history probes of slices B and C each detect a planted mutant of the page they guard: span cells, every cell a tab stop, the launch restore call deleted, save on input, clear on an empty field, savedAtMs as the finished signal, a per-tick write, a Forget that keeps the record, a pick that never toggles, unreadable history loaded as empty and writable, the read-only banner never shown, the other-tab sync removed, the restored chip kept on every tick, the saved note shown after a failed save, clear all forgetting the saved countdown, and a new-history reset that drops a value not in any backup");
+  const layoutCss = slice.criterion("layout-css-phone-first", "plan A8 in ui/styles.css and the mobile inline style: touch-action: none on the drag handle only, a collapsed card hides only its body, a gold drop line before/after and a dragging look, the handle and collapse button 44x44 on a coarse pointer, no transitions on them under reduced motion (planted mutants are detected)");
+  await guard(layoutCss, "layout css", async () => {
+    const mobileCss = ctx.art.mobileHtml.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? "";
+    textCriterion(layoutCss, { "ui/styles.css": readText("ui/styles.css"), "mobile/index.html <style>": mobileCss }, layoutCssProblems, [
+      ["touch-action on every card", "ui/styles.css", /\.calc-section \{/, ".calc-section {\n  touch-action: none;"],
+      ["mobile handle scrolls the page", "mobile/index.html <style>", /(\.drag-handle \{[^}]*?)touch-action:\s*none;/, "$1touch-action: manipulation;"],
+      ["collapse hides the whole card", "ui/styles.css", ".calc-section.card-collapsed .calc-card-body {", ".calc-section.card-collapsed,\n.calc-section.card-collapsed .calc-card-body {"],
+      ["mobile drop line not gold", "mobile/index.html <style>", /(\.calc-section\.card-drop-after \{[^}]*?)#E9A715/i, "$1#3a3f4c"],
+      ["mobile collapse button 32px on touch", "mobile/index.html <style>", /(@media \(pointer: coarse\) \{[\s\S]*?\.collapse-btn \{[^}]*?min-width:\s*)44px/, "$132px"],
+      ["desktop transitions kept under reduced motion", "ui/styles.css", /(@media \(prefers-reduced-motion: reduce\) \{[\s\S]*?)\.drag-handle,\n\s*\.collapse-btn \{\n\s*transition: none;/, "$1.reset-btn {\n    transition: none;"]
+    ]);
+  });
+
+  const mutants = slice.criterion("ui-mutant-proofs", "the v1.1.0 calendar, countdown and history probes and the v1.2.0 layout probes of slices B and C each detect a planted mutant of the page they guard: span cells, every cell a tab stop, the launch restore call deleted, save on input, clear on an empty field, savedAtMs as the finished signal, a per-tick write, a Forget that keeps the record, a pick that never toggles, unreadable history loaded as empty and writable, the read-only banner never shown, the other-tab sync removed, the restored chip kept on every tick, the saved note shown after a failed save, clear all forgetting the saved countdown, a new-history reset that drops a value not in any backup; and for the layout: a collapse that is not saved, quick-nav not synced, a reset that leaves a card collapsed, .style set during a drag (mobile), localStorage.clear() in the reset (mobile), a keyboard move that drops focus, a history restore that keeps its card collapsed, a drop that ignores the after half, a touch drag that starts at 4 px, edge auto-scroll armed at once, a pointer drop that drops focus, a handle tap that opens no move menu, the click ending a drag that opens it, a menu move that drops focus, a newer record not blocked at launch (desktop) or written over by the mobile store, the other-tab layout sync removed or applied mid-drag (mobile)");
   await guard(mutants, "ui mutants", () => runUiMutants(mutants, ctx));
 
   const git = slice.criterion("clean-git", "with --require-clean-git, the git working tree has no uncommitted or untracked changes (recorded but not gating without the flag)");

@@ -46,7 +46,7 @@ Commits follow the owner's *Git & GitHub Rhythm* (Claude skill `git-github-rhyth
 
 ## 🔐 Permission checks
 
-- Private per-device state must not be read, cleared or exported without owner authority: `%APPDATA%\com.datecalculator.tool\{history,settings,countdown}.json` and their backup copies (`history.json.bak`, `settings.json.bak`, `countdown.json.bak`, and timestamped `history.json.bak-<ms>` / `countdown.json.bak-<ms>`), browser `localStorage` (including `date_tool_countdown_v1`, `date_tool_countdown_v1_bak`, `date_tool_history_v1_bak` and `date_tool_history_v1_bak_<ms>`) and PWA caches.
+- Private per-device state must not be read, cleared or exported without owner authority: `%APPDATA%\com.datecalculator.tool\{history,settings,countdown,layout}.json` and their backup copies (`history.json.bak`, `settings.json.bak`, `countdown.json.bak`, `layout.json.bak`, and timestamped `history.json.bak-<ms>` / `countdown.json.bak-<ms>` / `layout.json.bak-<ms>`), browser `localStorage` (including `date_tool_countdown_v1`, `date_tool_countdown_v1_bak`, `date_tool_layout_v1`, `date_tool_layout_v1_bak`, `date_tool_history_v1_bak` and `date_tool_history_v1_bak_<ms>`) and PWA caches.
 - Pushing to `main`, tags and releases is outward-facing. The release job auto-publishes on a green push to `main`, so merging requires the owner's explicit yes.
 
 ## ✅ Verification workflow

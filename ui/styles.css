@@ -1963,6 +1963,139 @@ button.mini-cal-cell {
   }
 }
 
+/* v1.2.0 card layout (plan A8, ported from Percentage Calculator Tool
+   v2.3.0): a header row per card with a drag handle, the heading and a
+   collapse button. Collapse, drag and drop state are classes only. */
+.calc-card-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.8rem;
+  margin-bottom: 1rem;
+}
+
+.calc-card-heading {
+  flex: 1;
+  min-width: 0;
+}
+
+.calc-card-heading .section-subtitle {
+  margin-bottom: 0;
+}
+
+.drag-handle,
+.collapse-btn {
+  flex-shrink: 0;
+  background: #0E0F12;
+  border: 1px solid #3a3f4c;
+  border-radius: 0;
+  color: #94C59A;
+  font: inherit;
+  line-height: 1.5;
+  padding: 0.2rem 0.45rem;
+  transition: border-color 0.1s ease, color 0.1s ease;
+}
+
+.drag-handle {
+  touch-action: none;
+  cursor: grab;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.drag-handle:active {
+  cursor: grabbing;
+}
+
+.collapse-btn {
+  cursor: pointer;
+  white-space: nowrap;
+  font-size: 0.75rem;
+}
+
+.drag-handle:hover,
+.collapse-btn:hover,
+.drag-handle:focus-visible,
+.collapse-btn:focus-visible {
+  color: #E9A715;
+  border-color: #E9A715;
+  outline: 1px solid #E9A715;
+  outline-offset: 2px;
+}
+
+.calc-section.card-collapsed .calc-card-body {
+  display: none;
+}
+
+/* Collapsed: the title row only, so the card takes almost no scroll space. */
+.calc-section.card-collapsed .calc-card-header {
+  align-items: center;
+  margin-bottom: 0;
+}
+
+.calc-section.card-collapsed .calc-card-heading .section-title {
+  margin-bottom: 0;
+}
+
+.calc-section.card-collapsed .calc-card-heading .section-subtitle {
+  display: none;
+}
+
+.calc-section.card-dragging {
+  opacity: 0.55;
+  border-left-color: #94C59A;
+}
+
+/* The gold drop line before or after the target card. */
+.calc-section.card-drop-before {
+  box-shadow: 0 -3px 0 #E9A715;
+}
+
+.calc-section.card-drop-after {
+  box-shadow: 0 3px 0 #E9A715;
+}
+
+/* The move menu under a card's title row: Move up / Move down / Done, the
+   tap, click and screen-reader alternative to dragging (hidden with the
+   .hidden class). */
+.card-move-menu {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: -0.35rem 0 1rem;
+}
+
+.calc-section.card-collapsed .card-move-menu {
+  margin: 0.6rem 0 0;
+}
+
+.card-move-btn {
+  background: #0E0F12;
+  border: 1px solid #3a3f4c;
+  border-radius: 0;
+  color: #94C59A;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  padding: 0.25rem 0.75rem;
+  transition: border-color 0.1s ease, color 0.1s ease;
+}
+
+.card-move-btn:hover,
+.card-move-btn:focus-visible {
+  color: #E9A715;
+  border-color: #E9A715;
+  outline: 1px solid #E9A715;
+  outline-offset: 2px;
+}
+
+/* The Add / Subtract mode toggle sits above the inputs, inside the body. */
+.mode-row {
+  display: flex;
+  flex-wrap: wrap;
+  margin-bottom: 0.65rem;
+}
+
 /* Touch: 44 px targets, 16 px inputs (no iOS zoom) */
 @media (pointer: coarse) {
   .input-row input,
@@ -2000,6 +2133,16 @@ button.mini-cal-cell {
 
   .mini-cal-nav,
   .stepper-btn {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .card-move-btn,
+  .drag-handle,
+  .collapse-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     min-width: 44px;
     min-height: 44px;
   }
@@ -2073,10 +2216,27 @@ button.mini-cal-cell {
   .mini-cal-cell:focus-visible {
     outline: 2px solid Highlight;
   }
+
+  .calc-section.card-drop-before,
+  .calc-section.card-drop-after {
+    outline: 2px solid Highlight;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {
   html {
     scroll-behavior: auto;
   }
+
+  .calc-section,
+  .card-move-btn,
+  .drag-handle,
+  .collapse-btn {
+    transition: none;
+  }
+}
+
+.card-move-btn[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: default;
 }

@@ -66,7 +66,7 @@ function str(value) {
 }
 
 // ---------------------------------------------------------------------------
-// Shared UI text (v1.1.0). mobile/index.html carries a byte-identical copy of
+// Shared UI text (v1.2.0). mobile/index.html carries a byte-identical copy of
 // this table (cross-surface-text): change both together.
 // ---------------------------------------------------------------------------
 
@@ -99,7 +99,39 @@ const UI_TEXT = Object.freeze({
   historyReasonTooLarge: "The history file is larger than the size limit.",
   historyReasonCorrupt: "The history file is damaged or has entries that cannot be read.",
   historyReasonNewer: "The history file is from a newer version of the app.",
-  historyResetFailed: "A new history could not be started. Try again."
+  historyResetFailed: "A new history could not be started. Try again.",
+  // v1.2.0 card layout (plan A8)
+  cardTitles: Object.freeze({
+    between: "Days Between Two Dates",
+    add: "Add / Subtract",
+    business: "Business Days",
+    age: "Age",
+    info: "Date Info",
+    countdown: "Countdown"
+  }),
+  layoutMove: (title) => `Move ${title}`,
+  layoutCollapse: (title) => `Collapse ${title}`,
+  layoutExpand: (title) => `Expand ${title}`,
+  layoutCollapseGlyph: "[ − ]",
+  layoutExpandGlyph: "[ + ]",
+  layoutDragTitle: "Drag to reorder",
+  layoutMoveHint:
+    "Drag to move this card, or tap or press it for Move up and Move down buttons. Arrow Up and Arrow Down also move it.",
+  layoutMoveUp: "Move up",
+  layoutMoveDown: "Move down",
+  layoutMoveDone: "Done",
+  layoutMoved: (title, position, total) => `Moved ${title} to position ${position} of ${total}.`,
+  layoutResetButton: "Reset card order & expand all",
+  layoutSavedNote: "Card order and collapsed cards are saved on this device.",
+  layoutResetNote: "Card order reset and every card expanded.",
+  layoutCorruptNote: "The saved card layout was damaged, so the default layout is used.",
+  layoutNewerNote:
+    "The saved card layout is from a newer version, so it is left untouched. Changes last for this session only.",
+  layoutUnreadableNote:
+    "The saved card layout could not be read, so it is left untouched. Changes last for this session only.",
+  layoutWriteFailedNote:
+    "The card layout could not be saved on this device. Changes last for this session only.",
+  layoutSessionNote: "Kept for this session only. This browser is not saving site data."
 });
 
 // ---------------------------------------------------------------------------
@@ -2135,6 +2167,8 @@ async function restoreHistoryEntry(entry) {
   const key = entry.calculator;
   const inputs = entry.inputs && typeof entry.inputs === "object" ? entry.inputs : {};
   const val = (k) => (typeof inputs[k] === "string" ? inputs[k] : "");
+  // A collapsed card opens for the restore (and that is saved).
+  expandCard(key);
 
   switch (key) {
     case "between":
@@ -2444,8 +2478,675 @@ function resetCard(key, { forget = true } = {}) {
 
 function clearAllCalculators() {
   const done = Promise.all(CARD_KEYS.map((key) => resetCard(key, { forget: false })));
-  $("betweenStart")?.focus();
+  firstFocusTarget()?.focus();
   return done;
+}
+
+// ---------------------------------------------------------------------------
+// Card layout (v1.2.0, plan A8; ported from Percentage Calculator Tool
+// v2.3.0): every card can be collapsed to its title row and moved by its
+// drag handle (pointer: mouse, pen, touch) or by ArrowUp/ArrowDown on the
+// focused handle. The order and the collapsed set live in layout.json
+// through layout_load / layout_save / layout_reset, apart from settings, so
+// a v1.1.0 binary never meets an unknown settings field. A newer or
+// unreadable record is never written; the layout then lasts for the
+// session only and the Settings note says so. Collapsing only toggles the
+// `card-collapsed` class: inputs keep their values and live results keep
+// updating while a card is hidden.
+// ---------------------------------------------------------------------------
+
+const LAYOUT_SCHEMA_VERSION = 1;
+const LAYOUT_STATE_KEYS = ["schemaVersion", "cardOrder", "collapsedCards"];
+// A drag starts after 4 px with a mouse and 10 px with a finger or pen: a
+// tap often wanders a few px (Android's touch slop is about 8 dp). Holding
+// within 60 px of the top or bottom edge auto-scrolls, at up to 12 px a
+// frame (faster the deeper the pointer is in the edge zone), but only once
+// the drag has really travelled 24 px or been held for 300 ms, so a wobbly
+// tap near an edge never scrolls the page under a still finger.
+const DRAG_START_PX = 4;
+const DRAG_START_TOUCH_PX = 10;
+const DRAG_EDGE_PX = 60;
+const DRAG_SCROLL_PX = 12;
+const DRAG_EDGE_ARM_PX = 24;
+const DRAG_EDGE_HOLD_MS = 300;
+
+let layoutState = defaultLayout();
+let layoutLoadStatus = "empty"; // ok|empty|newer|corrupt|unreadable|unavailable
+let layoutStoreBlocked = false; // newer or unreadable record: never write over it
+let layoutWriteFailed = false; // the last layout write failed
+let layoutFailureAnnounced = false; // a failure streak is announced once
+let layoutNoteOverride = ""; // a one-off note (after a reset) until the next change
+let layoutWriteSeq = 0;
+let layoutWriteChain = Promise.resolve();
+let layoutLastSave = Promise.resolve();
+let layoutAnnounceTimer = 0;
+let cardDrag = null;
+let cardDragClickGuard = null; // the handle whose next click ends a real drag
+let cardMoveMenu = null; // the shared Move up / Move down / Done group
+let cardMoveMenuKey = ""; // the card whose move menu is open
+
+function defaultLayout() {
+  return { schemaVersion: LAYOUT_SCHEMA_VERSION, cardOrder: [...CARD_KEYS], collapsedCards: [] };
+}
+
+function cloneLayout(state) {
+  return {
+    schemaVersion: LAYOUT_SCHEMA_VERSION,
+    cardOrder: [...state.cardOrder],
+    collapsedCards: [...state.collapsedCards]
+  };
+}
+
+// The same rules as the Rust LayoutState: exactly these keys, each card once
+// in cardOrder, and unique valid keys in collapsedCards.
+function isLayoutState(s) {
+  if (!s || typeof s !== "object" || Array.isArray(s)) return false;
+  if (Object.keys(s).length !== LAYOUT_STATE_KEYS.length) return false;
+  if (!LAYOUT_STATE_KEYS.every((k) => Object.hasOwn(s, k))) return false;
+  if (s.schemaVersion !== LAYOUT_SCHEMA_VERSION) return false;
+  const { cardOrder, collapsedCards } = s;
+  if (!Array.isArray(cardOrder) || cardOrder.length !== CARD_KEYS.length) return false;
+  if (!cardOrder.every((k) => CARD_KEYS.includes(k))) return false;
+  if (new Set(cardOrder).size !== CARD_KEYS.length) return false;
+  if (!Array.isArray(collapsedCards) || collapsedCards.length > CARD_KEYS.length) return false;
+  return (
+    collapsedCards.every((k) => CARD_KEYS.includes(k)) &&
+    new Set(collapsedCards).size === collapsedCards.length
+  );
+}
+
+function cardEl(key) {
+  return Object.hasOwn(CARD_META, key) ? $(CARD_META[key].card) : null;
+}
+
+function cardTitle(key) {
+  return UI_TEXT.cardTitles[key] ?? CARD_META[key]?.label ?? key;
+}
+
+function isCardCollapsed(key) {
+  return layoutState.collapsedCards.includes(key);
+}
+
+// The cards in their current DOM order.
+function domCardOrder() {
+  const container = $("cardsContainer");
+  if (!container) return [...layoutState.cardOrder];
+  return Array.from(container.children)
+    .map((el) => el.getAttribute?.("data-calc"))
+    .filter((k) => CARD_KEYS.includes(k));
+}
+
+// The first input of the first expanded card, or the first card's collapse
+// button when every card is collapsed.
+function firstFocusTarget() {
+  const order = domCardOrder();
+  const key = order.find((k) => !isCardCollapsed(k));
+  if (key) return $(CARD_META[key].first);
+  return cardEl(order[0])?.querySelector(".collapse-btn") ?? null;
+}
+
+function renderCardCollapsed(key) {
+  const card = cardEl(key);
+  if (!card) return;
+  const collapsed = isCardCollapsed(key);
+  card.classList.toggle("card-collapsed", collapsed);
+  const button = card.querySelector(".collapse-btn");
+  if (!button) return;
+  const title = cardTitle(key);
+  button.setAttribute("aria-expanded", String(!collapsed));
+  button.setAttribute("aria-label", collapsed ? UI_TEXT.layoutExpand(title) : UI_TEXT.layoutCollapse(title));
+  const glyph = collapsed ? UI_TEXT.layoutExpandGlyph : UI_TEXT.layoutCollapseGlyph;
+  if (button.textContent !== glyph) button.textContent = glyph;
+}
+
+// The quick-nav pills follow the card order; "history" stays last.
+function syncQuickNav(order) {
+  const nav = document.querySelector(".quick-nav");
+  if (!nav) return;
+  const links = Array.from(nav.querySelectorAll(".quick-link[data-calc]"));
+  order.forEach((key, index) => {
+    const link = links.find((l) => l.getAttribute("data-calc") === key);
+    if (link && nav.children[index] !== link) nav.insertBefore(link, nav.children[index] ?? null);
+  });
+  const historyLink = nav.querySelector('.quick-link[href="#historySection"]');
+  if (historyLink && nav.children[nav.children.length - 1] !== historyLink) {
+    nav.appendChild(historyLink);
+  }
+}
+
+function applyLayout(state = layoutState) {
+  const container = $("cardsContainer");
+  if (container) {
+    state.cardOrder.forEach((key, index) => {
+      const card = cardEl(key);
+      if (card && container.children[index] !== card) {
+        container.insertBefore(card, container.children[index] ?? null);
+      }
+    });
+  }
+  CARD_KEYS.forEach((key) => renderCardCollapsed(key));
+  syncQuickNav(state.cardOrder);
+}
+
+function layoutNoteText() {
+  if (layoutLoadStatus === "newer") return UI_TEXT.layoutNewerNote;
+  if (layoutLoadStatus === "unreadable") return UI_TEXT.layoutUnreadableNote;
+  if (layoutWriteFailed || layoutLoadStatus === "unavailable") return UI_TEXT.layoutWriteFailedNote;
+  if (layoutNoteOverride) return layoutNoteOverride;
+  if (layoutLoadStatus === "corrupt") return UI_TEXT.layoutCorruptNote;
+  return UI_TEXT.layoutSavedNote;
+}
+
+function renderLayoutNote() {
+  const el = $("layoutStatusText");
+  if (!el) return;
+  const text = layoutNoteText();
+  if (el.textContent !== text) el.textContent = text;
+  el.classList.toggle(
+    "is-error",
+    layoutStoreBlocked || layoutWriteFailed || layoutLoadStatus === "unavailable"
+  );
+}
+
+// Polite, and re-announced when the same text repeats (a move at an edge).
+function announceLayout(text) {
+  const el = $("layoutLiveStatus");
+  if (!el) return;
+  window.clearTimeout(layoutAnnounceTimer);
+  layoutAnnounceTimer = 0;
+  if (el.textContent !== text) {
+    el.textContent = text;
+    return;
+  }
+  el.textContent = "";
+  layoutAnnounceTimer = window.setTimeout(() => {
+    layoutAnnounceTimer = 0;
+    el.textContent = text;
+  }, 60);
+}
+
+// Writes run one at a time, in order, so the last change wins. The chain
+// never rejects.
+function queueLayoutWrite(run) {
+  const result = layoutWriteChain.then(run, run);
+  layoutWriteChain = result.then(
+    () => undefined,
+    () => undefined
+  );
+  return result;
+}
+
+// A refusal from the store itself (a newer-version or unreadable record
+// appeared after launch) blocks further writes. Any other failure leaves the
+// layout applied for this session and says plainly that it is not saved.
+function onLayoutWriteFailed(err, ticket) {
+  const reason = String(err ?? "");
+  if (reason.includes("layout_newer_schema")) {
+    layoutLoadStatus = "newer";
+    layoutStoreBlocked = true;
+  } else if (reason.includes("layout_unreadable")) {
+    layoutLoadStatus = "unreadable";
+    layoutStoreBlocked = true;
+  } else if (ticket !== layoutWriteSeq) {
+    return; // a newer write (a full snapshot) decides the outcome
+  } else {
+    layoutWriteFailed = true;
+  }
+  layoutNoteOverride = "";
+  renderLayoutNote();
+  if (!layoutFailureAnnounced) {
+    layoutFailureAnnounced = true;
+    announceLayout(layoutNoteText());
+  }
+}
+
+// Saves the whole current layout (a snapshot), or, for a reset, asks the
+// store to write the default record.
+function saveLayout({ reset = false } = {}) {
+  layoutNoteOverride = "";
+  if (layoutStoreBlocked) {
+    renderLayoutNote();
+    layoutLastSave = layoutWriteChain;
+    return layoutLastSave;
+  }
+  const state = cloneLayout(layoutState);
+  const ticket = ++layoutWriteSeq;
+  const run = reset ? () => invoke("layout_reset") : () => invoke("layout_save", { state });
+  layoutLastSave = queueLayoutWrite(run).then(
+    () => {
+      if (ticket !== layoutWriteSeq || layoutStoreBlocked) return;
+      layoutWriteFailed = false;
+      layoutFailureAnnounced = false;
+      if (layoutLoadStatus !== "ok") layoutLoadStatus = "ok";
+      layoutNoteOverride = reset ? UI_TEXT.layoutResetNote : "";
+      renderLayoutNote();
+    },
+    (err) => onLayoutWriteFailed(err, ticket)
+  );
+  return layoutLastSave;
+}
+
+// Launch: read the record before the first render. Anything but a valid
+// "ok" record means the default layout.
+async function loadLayout() {
+  let load = null;
+  try {
+    load = await invoke("layout_load");
+  } catch {
+    load = null;
+  }
+  const status = load && typeof load.status === "string" ? load.status : "";
+  layoutState = defaultLayout();
+  layoutStoreBlocked = false;
+  layoutWriteFailed = false;
+  layoutNoteOverride = "";
+  if (status === "newer" || status === "unreadable") {
+    layoutLoadStatus = status;
+    layoutStoreBlocked = true;
+  } else if (status === "ok" && isLayoutState(load.state)) {
+    layoutLoadStatus = "ok";
+    layoutState = cloneLayout(load.state);
+  } else if (status === "corrupt") {
+    layoutLoadStatus = "corrupt";
+  } else if (status === "ok" || status === "empty") {
+    layoutLoadStatus = "empty";
+  } else {
+    // No layout store on this backend: still try to save, and say so if
+    // that fails.
+    layoutLoadStatus = "unavailable";
+  }
+  applyLayout(layoutState);
+  renderLayoutNote();
+}
+
+function onCardExpanded(key) {
+  // The countdown ticks on while hidden; render the current value at once.
+  if (key === "countdown" && cdActive) updateCountdownLive({ fromTick: true });
+}
+
+function setCardCollapsed(key, collapsed, { save = true } = {}) {
+  if (!CARD_KEYS.includes(key)) return false;
+  if (isCardCollapsed(key) === collapsed) {
+    renderCardCollapsed(key);
+    return false;
+  }
+  layoutState = {
+    ...layoutState,
+    collapsedCards: collapsed
+      ? [...layoutState.collapsedCards, key]
+      : layoutState.collapsedCards.filter((k) => k !== key)
+  };
+  renderCardCollapsed(key);
+  if (!collapsed) onCardExpanded(key);
+  if (save) saveLayout();
+  return true;
+}
+
+// Opening a collapsed card (quick-nav, history restore, a focus return from
+// Settings) expands it and saves that.
+function expandCard(key) {
+  return setCardCollapsed(key, false);
+}
+
+function expandCardContaining(el) {
+  const card = el?.closest?.(".calc-section");
+  const key = card?.getAttribute?.("data-calc");
+  if (key && isCardCollapsed(key)) expandCard(key);
+}
+
+function setCardOrder(order) {
+  if (order.join() === layoutState.cardOrder.join()) return false;
+  layoutState = { ...layoutState, cardOrder: [...order] };
+  applyLayout(layoutState);
+  saveLayout();
+  return true;
+}
+
+// Keyboard: ArrowUp/ArrowDown on the focused handle moves its card one place
+// and keeps focus on that handle. The Move up / Move down buttons of the
+// move menu move it the same way and keep focus on the pressed button.
+function moveCardBy(key, delta, { focusEl = null } = {}) {
+  finishCardDrag(true);
+  const order = domCardOrder();
+  const from = order.indexOf(key);
+  if (from < 0) return;
+  const to = Math.max(0, Math.min(order.length - 1, from + delta));
+  if (to !== from) {
+    order.splice(from, 1);
+    order.splice(to, 0, key);
+    setCardOrder(order);
+  }
+  const handle = focusEl ? null : cardEl(key)?.querySelector(".drag-handle");
+  if (focusEl?.isConnected && document.activeElement !== focusEl) focusEl.focus({ preventScroll: true });
+  if (handle && document.activeElement !== handle) handle.focus({ preventScroll: true });
+  (focusEl ?? handle)?.scrollIntoView?.({ block: "nearest" });
+  announceLayout(UI_TEXT.layoutMoved(cardTitle(key), to + 1, order.length));
+}
+
+function clearCardDropHints() {
+  document.querySelectorAll("#cardsContainer .calc-section").forEach((card) => {
+    card.classList.remove("card-drop-before", "card-drop-after");
+  });
+}
+
+// Picks the card under the pointer's height and marks a gold drop line
+// before or after it.
+function updateCardDropTarget(x, y) {
+  if (!cardDrag) return;
+  clearCardDropHints();
+  cardDrag.target = null;
+  const cards = [];
+  for (const card of document.querySelectorAll("#cardsContainer .calc-section")) {
+    if (card === cardDrag.card) continue;
+    const rect = card.getBoundingClientRect?.();
+    if (!rect || ![rect.top, rect.bottom, rect.left, rect.right].every(Number.isFinite)) continue;
+    cards.push({ card, rect });
+  }
+  if (cards.length === 0) return;
+  const containerRect = $("cardsContainer")?.getBoundingClientRect?.();
+  const inBand =
+    (containerRect && x >= containerRect.left - 80 && x <= containerRect.right + 80) ||
+    cards.some(({ rect }) => x >= rect.left && x <= rect.right);
+  if (!inBand) return;
+  let target;
+  if (y < cards[0].rect.top) {
+    target = cards[0];
+  } else if (y > cards[cards.length - 1].rect.bottom) {
+    target = cards[cards.length - 1];
+  } else {
+    const distance = ({ rect }) => Math.abs(y - (rect.top + rect.bottom) / 2);
+    target = cards.reduce((best, c) => (distance(c) < distance(best) ? c : best));
+  }
+  cardDrag.target = target.card;
+  cardDrag.after = y >= (target.rect.top + target.rect.bottom) / 2;
+  target.card.classList.add(cardDrag.after ? "card-drop-after" : "card-drop-before");
+}
+
+// The auto-scroll step for a pointer at height y: 0 away from the edges,
+// otherwise 2 to 12 px a frame, faster the deeper it is in the edge zone.
+function cardDragEdgeDelta(y) {
+  const height = window.innerHeight;
+  let depth = 0;
+  if (y < DRAG_EDGE_PX) depth = y - DRAG_EDGE_PX;
+  else if (y > height - DRAG_EDGE_PX) depth = y - (height - DRAG_EDGE_PX);
+  if (depth === 0) return 0;
+  const step = Math.round((DRAG_SCROLL_PX * Math.min(Math.abs(depth), DRAG_EDGE_PX)) / DRAG_EDGE_PX);
+  return Math.sign(depth) * Math.max(2, step);
+}
+
+// Holding near the top or bottom edge scrolls the page, once armed.
+function scrollCardDrag() {
+  if (!cardDrag?.moved || !cardDrag.edgeArmed) return;
+  const { x, y } = cardDrag;
+  const delta = cardDragEdgeDelta(y);
+  if (delta !== 0) {
+    window.scrollBy?.({ top: delta, behavior: "instant" });
+    updateCardDropTarget(x, y);
+    cardDrag.frame = window.requestAnimationFrame?.(scrollCardDrag) ?? 0;
+  } else {
+    cardDrag.frame = 0;
+  }
+}
+
+// The edge auto-scroll arms after the drag has travelled DRAG_EDGE_ARM_PX
+// or been held for DRAG_EDGE_HOLD_MS.
+function armCardDragEdge() {
+  if (!cardDrag?.moved) return;
+  cardDrag.armTimer = 0;
+  cardDrag.edgeArmed = true;
+  if (!cardDrag.frame && cardDragEdgeDelta(cardDrag.y) !== 0) {
+    cardDrag.frame = window.requestAnimationFrame?.(scrollCardDrag) ?? 0;
+  }
+}
+
+function finishCardDrag(cancelled = false, event = null) {
+  if (!cardDrag || (event && event.pointerId !== cardDrag.pointerId)) return;
+  if (!cancelled && cardDrag.moved && event) updateCardDropTarget(event.clientX, event.clientY);
+  const drag = cardDrag;
+  cardDrag = null;
+  if (drag.frame) window.cancelAnimationFrame?.(drag.frame);
+  if (drag.armTimer) window.clearTimeout(drag.armTimer);
+  // The click that ends a real drag must not open the move menu.
+  if (drag.moved) cardDragClickGuard = drag.handle;
+  drag.card.classList.remove("card-dragging");
+  clearCardDropHints();
+  try {
+    drag.handle.releasePointerCapture?.(drag.pointerId);
+  } catch {
+    // A synthetic or already released pointer has no capture.
+  }
+  if (cancelled || !drag.moved || !drag.target) return;
+  const container = $("cardsContainer");
+  if (!container || drag.target.parentNode !== container) return;
+  const children = Array.from(container.children);
+  const targetIndex = children.indexOf(drag.target);
+  const reference = drag.after ? children[targetIndex + 1] ?? null : drag.target;
+  // Moving the card takes it out of the page for a moment, which drops focus
+  // held inside it (an input, its collapse button): put focus back without
+  // scrolling, as the keyboard move and the other-tab sync do.
+  const active = document.activeElement;
+  const hadFocus = Boolean(active && active !== document.body && drag.card.contains(active));
+  if (reference !== drag.card) container.insertBefore(drag.card, reference);
+  if (hadFocus) {
+    const next = active.isConnected ? active : drag.handle;
+    if (document.activeElement !== next) next.focus({ preventScroll: true });
+  }
+  const order = domCardOrder();
+  if (setCardOrder(order)) {
+    announceLayout(UI_TEXT.layoutMoved(cardTitle(drag.key), order.indexOf(drag.key) + 1, order.length));
+  }
+}
+
+// The move menu: a tap, click or Enter/Space on a handle (without dragging)
+// opens Move up / Move down / Done under that card's title row, so a phone
+// screen-reader user (no arrow keys, no practical drag) can reorder cards
+// with single taps (WCAG 2.5.7). One shared group moves between cards.
+function buildCardMoveMenu() {
+  const menu = document.createElement("div");
+  menu.id = "cardMoveMenu";
+  menu.className = "card-move-menu hidden";
+  menu.setAttribute("role", "group");
+  [
+    ["up", UI_TEXT.layoutMoveUp],
+    ["down", UI_TEXT.layoutMoveDown],
+    ["done", UI_TEXT.layoutMoveDone]
+  ].forEach(([action, text]) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "card-move-btn";
+    button.setAttribute("data-move", action);
+    button.textContent = text;
+    button.addEventListener("click", () => onCardMoveAction(action, button));
+    menu.append(button);
+  });
+  return menu;
+}
+
+// Marks Move up / Move down unavailable at the ends (aria-disabled, not
+// disabled, so a focused button keeps focus).
+function updateCardMoveEdges() {
+  if (!cardMoveMenu || !cardMoveMenuKey) return;
+  const order = domCardOrder();
+  const at = order.indexOf(cardMoveMenuKey);
+  cardMoveMenu.querySelectorAll(".card-move-btn").forEach((button) => {
+    const action = button.getAttribute("data-move");
+    const edge = (action === "up" && at <= 0) || (action === "down" && at >= order.length - 1);
+    if (edge) button.setAttribute("aria-disabled", "true");
+    else button.removeAttribute("aria-disabled");
+  });
+}
+
+function openCardMoveMenu(key) {
+  const card = cardEl(key);
+  const body = card?.querySelector(".calc-card-body");
+  if (!cardMoveMenu || !body) return;
+  if (cardMoveMenu.parentNode !== card) card.insertBefore(cardMoveMenu, body);
+  cardMoveMenuKey = key;
+  cardMoveMenu.setAttribute("aria-label", UI_TEXT.layoutMove(cardTitle(key)));
+  cardMoveMenu.classList.remove("hidden");
+  updateCardMoveEdges();
+  cardMoveMenu.querySelector(".card-move-btn")?.focus({ preventScroll: true });
+  cardMoveMenu.scrollIntoView?.({ block: "nearest" });
+}
+
+// Closing returns focus to the card's handle when it was in the menu (or
+// when asked), unless the pointer is already going elsewhere.
+function closeCardMoveMenu({ focusHandle = false, keepFocus = false } = {}) {
+  if (!cardMoveMenu || !cardMoveMenuKey) return false;
+  const handle = cardEl(cardMoveMenuKey)?.querySelector(".drag-handle");
+  const hadFocus = cardMoveMenu.contains(document.activeElement);
+  cardMoveMenuKey = "";
+  cardMoveMenu.classList.add("hidden");
+  if (handle && !keepFocus && (focusHandle || hadFocus) && document.activeElement !== handle) {
+    handle.focus({ preventScroll: true });
+  }
+  return true;
+}
+
+function onCardMoveAction(action, button) {
+  const key = cardMoveMenuKey;
+  if (!key) return;
+  if (action === "done") closeCardMoveMenu({ focusHandle: true });
+  else {
+    moveCardBy(key, action === "up" ? -1 : 1, { focusEl: button });
+    updateCardMoveEdges();
+  }
+}
+
+function bindCardLayout() {
+  const hint = $("cardMoveHint");
+  if (hint) hint.textContent = UI_TEXT.layoutMoveHint;
+  const resetBtn = $("resetLayoutBtn");
+  if (resetBtn) resetBtn.textContent = UI_TEXT.layoutResetButton;
+  cardMoveMenu = buildCardMoveMenu();
+  const firstCard = cardEl(domCardOrder()[0]);
+  firstCard?.insertBefore(cardMoveMenu, firstCard.querySelector(".calc-card-body"));
+
+  CARD_KEYS.forEach((key) => {
+    const card = cardEl(key);
+    if (!card) return;
+    const title = cardTitle(key);
+    card.querySelector(".collapse-btn")?.addEventListener("click", () => {
+      finishCardDrag(true);
+      setCardCollapsed(key, !isCardCollapsed(key));
+    });
+    const handle = card.querySelector(".drag-handle");
+    if (!handle) return;
+    handle.setAttribute("aria-label", UI_TEXT.layoutMove(title));
+    handle.setAttribute("title", UI_TEXT.layoutDragTitle);
+    handle.addEventListener("pointerdown", (event) => {
+      if (cardDrag || (event.button ?? 0) !== 0 || event.isPrimary === false) return;
+      event.preventDefault();
+      cardDragClickGuard = null;
+      cardDrag = {
+        key,
+        card,
+        handle,
+        pointerId: event.pointerId,
+        pointerType: event.pointerType || "",
+        startX: event.clientX,
+        startY: event.clientY,
+        x: event.clientX,
+        y: event.clientY,
+        moved: false,
+        target: null,
+        after: false,
+        frame: 0,
+        edgeArmed: false,
+        armTimer: 0
+      };
+      try {
+        handle.setPointerCapture?.(event.pointerId);
+      } catch {
+        // The document listeners also follow an uncaptured pointer.
+      }
+    });
+    handle.addEventListener("lostpointercapture", (event) => {
+      if (cardDrag?.handle === handle) finishCardDrag(true, event);
+    });
+    // A tap, click or Enter/Space opens (or closes) this card's move menu;
+    // the click that ends a real drag does not.
+    handle.addEventListener("click", () => {
+      if (cardDragClickGuard === handle) {
+        cardDragClickGuard = null;
+        return;
+      }
+      if (cardMoveMenuKey === key) closeCardMoveMenu({ focusHandle: true });
+      else openCardMoveMenu(key);
+    });
+    handle.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") cardDragClickGuard = null;
+      if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+      if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+      event.preventDefault();
+      moveCardBy(key, event.key === "ArrowUp" ? -1 : 1);
+    });
+  });
+
+  document.addEventListener("pointermove", (event) => {
+    if (!cardDrag || event.pointerId !== cardDrag.pointerId) return;
+    cardDrag.x = event.clientX;
+    cardDrag.y = event.clientY;
+    const dist = Math.hypot(event.clientX - cardDrag.startX, event.clientY - cardDrag.startY);
+    if (!cardDrag.moved) {
+      const threshold = cardDrag.pointerType === "mouse" ? DRAG_START_PX : DRAG_START_TOUCH_PX;
+      if (dist < threshold) return;
+      cardDrag.moved = true;
+      cardDrag.card.classList.add("card-dragging");
+      closeCardMoveMenu();
+      cardDrag.armTimer = window.setTimeout(armCardDragEdge, DRAG_EDGE_HOLD_MS);
+    }
+    event.preventDefault();
+    updateCardDropTarget(event.clientX, event.clientY);
+    if (!cardDrag.edgeArmed && dist > DRAG_EDGE_ARM_PX) {
+      if (cardDrag.armTimer) window.clearTimeout(cardDrag.armTimer);
+      cardDrag.armTimer = 0;
+      cardDrag.edgeArmed = true;
+    }
+    if (cardDrag.edgeArmed && !cardDrag.frame && cardDragEdgeDelta(event.clientY) !== 0) {
+      cardDrag.frame = window.requestAnimationFrame?.(scrollCardDrag) ?? 0;
+    }
+  });
+  // A pointer going down anywhere outside the open move menu and its handle
+  // closes the menu (focus follows the pointer).
+  document.addEventListener("pointerdown", (event) => {
+    if (!cardMoveMenuKey) return;
+    const target = event.target;
+    if (cardMoveMenu?.contains(target)) return;
+    if (target?.closest?.(".drag-handle") === cardEl(cardMoveMenuKey)?.querySelector(".drag-handle")) return;
+    closeCardMoveMenu({ keepFocus: true });
+  });
+  document.addEventListener("pointerup", (event) => finishCardDrag(false, event));
+  document.addEventListener("pointercancel", (event) => finishCardDrag(true, event));
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    finishCardDrag(true);
+    // Escape in the move menu, or on its handle, closes it.
+    const target = event.target;
+    const menuHandle = cardMoveMenuKey ? cardEl(cardMoveMenuKey)?.querySelector(".drag-handle") : null;
+    if (menuHandle && (cardMoveMenu?.contains(target) || target === menuHandle)) {
+      event.preventDefault();
+      closeCardMoveMenu({ focusHandle: true });
+    }
+  });
+  window.addEventListener("blur", () => finishCardDrag(true));
+
+  // A pill of a collapsed card expands it; the link then scrolls to it.
+  document.querySelectorAll(".quick-nav .quick-link[data-calc]").forEach((link) => {
+    link.addEventListener("click", () => {
+      const key = link.getAttribute("data-calc");
+      if (isCardCollapsed(key)) expandCard(key);
+    });
+  });
+
+  resetBtn?.addEventListener("click", () => {
+    closeCardMoveMenu({ keepFocus: true });
+    finishCardDrag(true);
+    layoutState = defaultLayout();
+    applyLayout(layoutState);
+    CARD_KEYS.forEach((key) => onCardExpanded(key));
+    saveLayout({ reset: true });
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -2473,6 +3174,8 @@ function closeModal(modalId, fallbackId) {
     back && back !== document.body && document.contains(back) && typeof back.focus === "function"
       ? back
       : $(fallbackId);
+  // Focus going back into a collapsed card (an Edit-calendar link) opens it.
+  expandCardContaining(target);
   target?.focus();
 }
 
@@ -3529,6 +4232,18 @@ async function runSmokeTestIfRequested(smokeEnabledArg) {
     await settled();
   };
   const waitUntilCopied = (btnId) => waitUntil(() => $(btnId)?.textContent === "copied");
+  const sameKeys = (a, b) => Array.isArray(a) && Array.isArray(b) && a.join() === b.join();
+  const navCardOrder = () =>
+    Array.from(document.querySelectorAll(".quick-nav .quick-link[data-calc]"), (l) =>
+      l.getAttribute("data-calc")
+    );
+  const dragHandleOf = (key) => cardEl(key).querySelector(".drag-handle");
+  const collapseBtnOf = (key) => cardEl(key).querySelector(".collapse-btn");
+  const layoutStored = async () => {
+    await layoutLastSave;
+    await layoutWriteChain;
+    return invoke("layout_load");
+  };
   const cdRegex = /^\d{1,3}(?:,\d{3})*d \d{2}h \d{2}m \d{2}s$/;
 
   try {
@@ -3537,14 +4252,14 @@ async function runSmokeTestIfRequested(smokeEnabledArg) {
 
     const appInfo = await invoke("get_app_info");
     check("app-name", appInfo.name === "Date Calculator Tool");
-    check("app-version", appInfo.version === "1.1.0");
+    check("app-version", appInfo.version === "1.2.0");
     check(
       "app-credits",
       appInfo.credits.includes("Mohamed Sayed") &&
         appInfo.credits.includes("Ahmed Emara") &&
         appInfo.credits.includes("Claude")
     );
-    check("footer-version", txt("appVersion").includes("Desktop v1.1.0"));
+    check("footer-version", txt("appVersion").includes("Desktop v1.2.0"));
     check(
       "countdown-store-empty-at-launch",
       $("cdTarget").value === "" && $("cdSavedNote").classList.contains("hidden")
@@ -3562,6 +4277,142 @@ async function runSmokeTestIfRequested(smokeEnabledArg) {
     quickLinks.find((link) => link.getAttribute("href") === "#card-countdown")?.click();
     check("quick-nav-hash", window.location.hash === "#card-countdown");
     window.history.replaceState(null, "", window.location.pathname);
+    window.scrollTo(0, 0);
+
+    // 0. Card layout (A8) through the in-memory layout store: collapse and
+    // expand persist, a pointer drag and a keyboard move reorder the DOM,
+    // the quick-nav and the store, opening a collapsed card expands it, and
+    // reset restores the defaults.
+    let layout = await invoke("layout_load");
+    check(
+      "layout-store-empty-at-launch",
+      layout.status === "empty" &&
+        layout.state === null &&
+        sameKeys(domCardOrder(), CARD_KEYS) &&
+        sameKeys(navCardOrder(), CARD_KEYS) &&
+        CARD_KEYS.every((k) => !cardEl(k).classList.contains("card-collapsed")) &&
+        txt("layoutStatusText") === UI_TEXT.layoutSavedNote
+    );
+    collapseBtnOf("business").click();
+    layout = await layoutStored();
+    check(
+      "layout-collapse-persists",
+      cardEl("business").classList.contains("card-collapsed") &&
+        $("card-business-body").offsetParent === null &&
+        collapseBtnOf("business").getAttribute("aria-expanded") === "false" &&
+        collapseBtnOf("business").getAttribute("aria-label") === UI_TEXT.layoutExpand("Business Days") &&
+        collapseBtnOf("business").textContent === UI_TEXT.layoutExpandGlyph &&
+        layout.status === "ok" &&
+        sameKeys(layout.state?.collapsedCards, ["business"]) &&
+        sameKeys(layout.state?.cardOrder, CARD_KEYS)
+    );
+    collapseBtnOf("business").click();
+    layout = await layoutStored();
+    check(
+      "layout-expand-persists",
+      !cardEl("business").classList.contains("card-collapsed") &&
+        $("card-business-body").offsetParent !== null &&
+        collapseBtnOf("business").getAttribute("aria-expanded") === "true" &&
+        collapseBtnOf("business").getAttribute("aria-label") === UI_TEXT.layoutCollapse("Business Days") &&
+        collapseBtnOf("business").textContent === UI_TEXT.layoutCollapseGlyph &&
+        sameKeys(layout.state?.collapsedCards, [])
+    );
+
+    // Pointer drag: the Countdown handle onto the top of the first card.
+    window.scrollTo(0, 0);
+    const dragHandle = dragHandleOf("countdown");
+    const handleRect = dragHandle.getBoundingClientRect();
+    const firstRect = cardEl("between").getBoundingClientRect();
+    const dropX = firstRect.left + firstRect.width / 2;
+    const dropY = Math.max(firstRect.top + 4, DRAG_EDGE_PX + 4);
+    const pointer = (type, x, y) =>
+      dragHandle.dispatchEvent(
+        new PointerEvent(type, {
+          pointerId: 7,
+          pointerType: "mouse",
+          isPrimary: true,
+          button: 0,
+          buttons: type === "pointerup" ? 0 : 1,
+          clientX: x,
+          clientY: y,
+          bubbles: true,
+          cancelable: true
+        })
+      );
+    pointer("pointerdown", handleRect.left + 4, handleRect.top + 4);
+    pointer("pointermove", dropX, dropY + 30);
+    pointer("pointermove", dropX, dropY);
+    const dropShown =
+      cardEl("countdown").classList.contains("card-dragging") &&
+      cardEl("between").classList.contains("card-drop-before");
+    pointer("pointerup", dropX, dropY);
+    layout = await layoutStored();
+    const dragged = ["countdown", "between", "add", "business", "age", "info"];
+    check(
+      "layout-pointer-drag",
+      dropShown &&
+        sameKeys(domCardOrder(), dragged) &&
+        sameKeys(navCardOrder(), dragged) &&
+        sameKeys(layout.state?.cardOrder, dragged) &&
+        document.querySelector(".card-dragging, .card-drop-before, .card-drop-after") === null &&
+        txt("layoutLiveStatus") === UI_TEXT.layoutMoved("Countdown", 1, 6)
+    );
+    // A drag cancelled with Escape changes nothing.
+    pointer("pointerdown", handleRect.left + 4, handleRect.top + 4);
+    pointer("pointermove", dropX, dropY + 400);
+    document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    pointer("pointerup", dropX, dropY + 400);
+    check(
+      "layout-drag-escape-cancels",
+      sameKeys(domCardOrder(), dragged) &&
+        document.querySelector(".card-dragging, .card-drop-before, .card-drop-after") === null
+    );
+
+    // Keyboard: ArrowDown on the focused handle, focus stays on it.
+    dragHandleOf("countdown").focus();
+    dragHandleOf("countdown").dispatchEvent(
+      new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true })
+    );
+    layout = await layoutStored();
+    const keyed = ["between", "countdown", "add", "business", "age", "info"];
+    check(
+      "layout-keyboard-move",
+      sameKeys(domCardOrder(), keyed) &&
+        sameKeys(navCardOrder(), keyed) &&
+        sameKeys(layout.state?.cardOrder, keyed) &&
+        document.activeElement === dragHandleOf("countdown") &&
+        txt("layoutLiveStatus") === UI_TEXT.layoutMoved("Countdown", 2, 6)
+    );
+
+    // Opening a collapsed card from its quick-nav pill expands it.
+    collapseBtnOf("info").click();
+    await layoutStored();
+    document.querySelector('.quick-nav .quick-link[data-calc="info"]').click();
+    layout = await layoutStored();
+    check(
+      "layout-quick-nav-expands",
+      !cardEl("info").classList.contains("card-collapsed") &&
+        window.location.hash === "#card-info" &&
+        sameKeys(layout.state?.collapsedCards, [])
+    );
+    window.history.replaceState(null, "", window.location.pathname);
+
+    // Reset: default order, every card expanded, the default record saved.
+    collapseBtnOf("age").click();
+    collapseBtnOf("countdown").click();
+    await layoutStored();
+    $("resetLayoutBtn").click();
+    layout = await layoutStored();
+    check(
+      "layout-reset-defaults",
+      sameKeys(domCardOrder(), CARD_KEYS) &&
+        sameKeys(navCardOrder(), CARD_KEYS) &&
+        CARD_KEYS.every((k) => !cardEl(k).classList.contains("card-collapsed")) &&
+        layout.status === "ok" &&
+        sameKeys(layout.state?.cardOrder, CARD_KEYS) &&
+        sameKeys(layout.state?.collapsedCards, []) &&
+        txt("layoutStatusText") === UI_TEXT.layoutResetNote
+    );
     window.scrollTo(0, 0);
 
     // 1. Days between
@@ -4282,6 +5133,10 @@ async function runSmokeTestIfRequested(smokeEnabledArg) {
       txt("historyCount") === "(2 / 500)" &&
         document.querySelectorAll(".history-item").length === 1
     );
+    // A8: restoring into a collapsed card expands it (and saves that).
+    collapseBtnOf("add").click();
+    await layoutStored();
+    const addWasCollapsed = cardEl("add").classList.contains("card-collapsed");
     document.querySelector(".history-restore-btn").click();
     check(
       "history-restore",
@@ -4293,6 +5148,14 @@ async function runSmokeTestIfRequested(smokeEnabledArg) {
           txt("addResult").includes("February 29, 2024") &&
           $("card-add").classList.contains("card-restored")
       )
+    );
+    layout = await layoutStored();
+    check(
+      "layout-history-restore-expands",
+      addWasCollapsed &&
+        !cardEl("add").classList.contains("card-collapsed") &&
+        document.activeElement?.id === "addStart" &&
+        sameKeys(layout.state?.collapsedCards, [])
     );
     historyFilterEl.value = "all";
     historyFilterEl.dispatchEvent(new Event("change"));
@@ -4367,10 +5230,22 @@ async function runSmokeTestIfRequested(smokeEnabledArg) {
       await waitUntil(() => txt("updateStatusText").includes("Up to date"))
     );
     $("openReleasePageBtn").click();
+    // A8: focus going back to the Edit-calendar link of a collapsed card
+    // opens that card.
+    setCardCollapsed("business", true);
+    await layoutStored();
+    const bizWasCollapsed = cardEl("business").classList.contains("card-collapsed");
     $("settingsModal").dispatchEvent(new MouseEvent("click", { bubbles: true }));
     check(
       "settings-backdrop-close-and-focus",
       !isModalOpen("settingsModal") && document.activeElement?.id === "bizCalendarEditBtn"
+    );
+    layout = await layoutStored();
+    check(
+      "layout-edit-calendar-return-expands",
+      bizWasCollapsed &&
+        !cardEl("business").classList.contains("card-collapsed") &&
+        sameKeys(layout.state?.collapsedCards, [])
     );
 
     check("no-markup-from-data", document.querySelector("b") === null);
@@ -4397,7 +5272,10 @@ async function initialize() {
   bindControls();
   bindSettingsControls();
   bindCards();
+  bindCardLayout();
   syncAddBusinessUi();
+  // A8: the saved card order and collapsed set apply before the first render.
+  await loadLayout();
 
   let smokeEnabled = false;
   try {
@@ -4456,7 +5334,7 @@ async function initialize() {
     if (event.persisted) resumeVisible();
   });
 
-  $("betweenStart").focus();
+  firstFocusTarget()?.focus();
   await runSmokeTestIfRequested(smokeEnabled === true);
 }
 

@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 use tauri::Manager;
 
-use commands::{CountdownState, HistoryEntry, HistoryReadOnlyReason};
+use commands::{CountdownState, HistoryEntry, HistoryReadOnlyReason, LayoutState};
 
 pub struct SmokeState {
     pub enabled: bool,
@@ -31,6 +31,13 @@ pub struct CountdownStore {
     pub state: Mutex<Option<CountdownState>>,
 }
 
+/// Plan A8: the saved card order and collapsed cards. On disk it is
+/// `layout.json`; during `--smoke-test` it lives only in `state`.
+pub struct LayoutStore {
+    pub in_memory_only: bool,
+    pub state: Mutex<Option<LayoutState>>,
+}
+
 pub struct SettingsState {
     pub in_memory_only: bool,
     pub settings: Mutex<commands::AppSettings>,
@@ -45,8 +52,8 @@ fn main() {
             enabled: smoke_enabled,
         })
         .setup(move |app| {
-            // Smoke mode never touches the real history/settings/countdown
-            // files: it starts empty and keeps everything in memory.
+            // Smoke mode never touches the real history/settings/countdown/
+            // layout files: it starts empty and keeps everything in memory.
             let history = if smoke_enabled {
                 commands::HistoryLoad::default()
             } else {
@@ -63,6 +70,12 @@ fn main() {
 
             // The countdown file is read on demand by `countdown_load`.
             app.manage(CountdownStore {
+                in_memory_only: smoke_enabled,
+                state: Mutex::new(None),
+            });
+
+            // The layout file is read on demand by `layout_load`.
+            app.manage(LayoutStore {
                 in_memory_only: smoke_enabled,
                 state: Mutex::new(None),
             });
@@ -111,6 +124,9 @@ fn main() {
             commands::countdown_load,
             commands::countdown_save,
             commands::countdown_clear,
+            commands::layout_load,
+            commands::layout_save,
+            commands::layout_reset,
             commands::get_settings,
             commands::set_settings,
             commands::check_for_updates,

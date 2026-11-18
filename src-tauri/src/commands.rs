@@ -14,6 +14,7 @@ use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use date_core::api::{self, Op, Response, MAX_REQUEST_BYTES};
@@ -27,7 +28,7 @@ use serde_json::Value;
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
-use crate::{CountdownStore, HistoryState, SettingsState, SmokeState};
+use crate::{CountdownStore, HistoryState, LayoutStore, SettingsState, SmokeState};
 
 pub const HISTORY_MAX_ENTRIES: usize = 500;
 const HISTORY_MAX_FILE_BYTES: usize = 1024 * 1024;
@@ -679,6 +680,315 @@ fn persist_settings_to_path(path: &Path, settings: &AppSettings) -> Result<(), S
 }
 
 // ---------------------------------------------------------------------------
+// Small per-device records: countdown (plan A2) and card layout (plan A8)
+// ---------------------------------------------------------------------------
+
+/// How much of an over-cap record file is read to look for a newer
+/// `schemaVersion` before it is treated as invalid.
+const RECORD_SNIFF_MAX_BYTES: usize = 64 * 1024;
+
+/// One small record kept in its own file, apart from `settings.json`, so a
+/// bad record can never fail settings closed (and the reverse), and a newer
+/// build's record is never treated as corrupt by an older one. Countdown
+/// (plan A2) and layout (plan A8) share every storage rule below and differ
+/// only in these values.
+struct RecordFile {
+    /// `"countdown"` → messages like `countdown lock poisoned`.
+    name: &'static str,
+    /// `"countdown file"` → messages like `failed to read countdown file`.
+    label: &'static str,
+    max_bytes: usize,
+    schema_version: u64,
+    /// The refusal a save/clear/reset returns for a newer-schema record.
+    newer_schema: &'static str,
+    /// The refusal a save/clear/reset returns for an existing file that is
+    /// over the cap or cannot be read.
+    unreadable: &'static str,
+}
+
+/// `countdown_load` / `layout_load` status strings.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum RecordLoadStatus {
+    /// A valid v1 record.
+    Ok,
+    /// No record.
+    Empty,
+    /// Written by a newer build: ignored, never written or backed up.
+    Newer,
+    /// Invalid: `<name>.json.bak` was attempted (an over-cap file is renamed
+    /// aside instead), the record is ignored.
+    Corrupt,
+    /// Exists but could not be read (lock, permission, symlink, not a
+    /// regular file, or over the cap and could not be moved aside).
+    Unreadable,
+}
+
+/// `{"state": T | null, "status": "ok" | "empty" | …}`.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct RecordLoad<T> {
+    pub state: Option<T>,
+    pub status: RecordLoadStatus,
+}
+
+impl<T> RecordLoad<T> {
+    fn without_state(status: RecordLoadStatus) -> Self {
+        Self {
+            state: None,
+            status,
+        }
+    }
+}
+
+fn app_data_file_path(app: &AppHandle, file_name: &str) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|err| format!("failed to resolve app data dir: {err}"))?;
+    Ok(dir.join(file_name))
+}
+
+/// True when `bytes` are a JSON object that declares a newer schema.
+fn record_bytes_are_newer(bytes: &[u8], rec: &RecordFile) -> bool {
+    serde_json::from_slice::<Value>(bytes)
+        .is_ok_and(|value| value.is_object() && declares_newer_schema(&value, rec.schema_version))
+}
+
+/// True when an over-cap record file still declares a newer schema: a
+/// newer build may write a larger record, so its `schemaVersion` is read from
+/// up to `RECORD_SNIFF_MAX_BYTES` before the file is treated as invalid.
+fn oversize_record_is_newer(path: &Path, rec: &RecordFile) -> bool {
+    read_regular_file_limited(path, RECORD_SNIFF_MAX_BYTES, rec.label)
+        .is_ok_and(|bytes| record_bytes_are_newer(&bytes, rec))
+}
+
+/// Plan A2/A8: a save, clear or reset replaces or removes only a missing
+/// file, a symlink (never written through: `write_atomic_private` refuses
+/// it, clear removes the link itself) or a readable record of this schema,
+/// valid or corrupt (a corrupt one was backed up at load). A newer-schema
+/// record, a file over the cap or one that cannot be read is refused here,
+/// whatever the UI believes.
+fn record_slot_replaceable(path: &Path, rec: &RecordFile) -> Result<(), String> {
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err(rec.unreadable.to_string()),
+    };
+    if meta.file_type().is_symlink() {
+        return Ok(());
+    }
+    if meta.file_type().is_file() && meta.len() > rec.max_bytes as u64 {
+        return Err(if oversize_record_is_newer(path, rec) {
+            rec.newer_schema
+        } else {
+            rec.unreadable
+        }
+        .to_string());
+    }
+    let bytes = read_regular_file_limited(path, rec.max_bytes, rec.label)
+        .map_err(|_| rec.unreadable.to_string())?;
+    if record_bytes_are_newer(&bytes, rec) {
+        return Err(rec.newer_schema.to_string());
+    }
+    Ok(())
+}
+
+/// Plan A2/A8, a regular file over the 1 KiB cap. This build never writes
+/// one, so unless it declares a newer schema (left alone, status `newer`) it
+/// is invalid. Its bytes are too large to copy into `<name>.json.bak`, so the
+/// file is renamed aside whole (`move_aside`) and the slot becomes writable
+/// again (status `corrupt`). If it cannot be moved it stays `unreadable` and
+/// untouched.
+fn load_oversize_record<T>(path: &Path, rec: &RecordFile) -> RecordLoad<T> {
+    if oversize_record_is_newer(path, rec) {
+        return RecordLoad::without_state(RecordLoadStatus::Newer);
+    }
+    match move_aside(path) {
+        Ok(_) => RecordLoad::without_state(RecordLoadStatus::Corrupt),
+        Err(_) => RecordLoad::without_state(RecordLoadStatus::Unreadable),
+    }
+}
+
+/// Parses a record from raw JSON. `schemaVersion` is read first, so a newer
+/// record is recognised without a strict parse; then the strict
+/// (`deny_unknown_fields`) parse and the record's own validator run.
+fn parse_record_value<T: serde::de::DeserializeOwned>(
+    value: Value,
+    rec: &RecordFile,
+    validate: fn(&T) -> Result<(), &'static str>,
+) -> Result<T, RecordLoadStatus> {
+    if !value.is_object() {
+        return Err(RecordLoadStatus::Corrupt);
+    }
+    if declares_newer_schema(&value, rec.schema_version) {
+        return Err(RecordLoadStatus::Newer);
+    }
+    if value.get("schemaVersion").and_then(Value::as_u64) != Some(rec.schema_version) {
+        return Err(RecordLoadStatus::Corrupt);
+    }
+    let state = serde_json::from_value::<T>(value).map_err(|_| RecordLoadStatus::Corrupt)?;
+    validate(&state).map_err(|_| RecordLoadStatus::Corrupt)?;
+    Ok(state)
+}
+
+fn load_record_from_path<T: serde::de::DeserializeOwned>(
+    path: &Path,
+    rec: &RecordFile,
+    validate: fn(&T) -> Result<(), &'static str>,
+) -> RecordLoad<T> {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_file() && meta.len() > rec.max_bytes as u64 => {
+            return load_oversize_record(path, rec);
+        }
+        Ok(_) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return RecordLoad::without_state(RecordLoadStatus::Empty);
+        }
+        Err(_) => return RecordLoad::without_state(RecordLoadStatus::Unreadable),
+    }
+    let Ok(bytes) = read_regular_file_limited(path, rec.max_bytes, rec.label) else {
+        return RecordLoad::without_state(RecordLoadStatus::Unreadable);
+    };
+    let parsed = serde_json::from_slice::<Value>(&bytes)
+        .map_err(|_| RecordLoadStatus::Corrupt)
+        .and_then(|value| parse_record_value(value, rec, validate));
+    match parsed {
+        Ok(state) => RecordLoad {
+            state: Some(state),
+            status: RecordLoadStatus::Ok,
+        },
+        Err(RecordLoadStatus::Corrupt) => {
+            backup_corrupt_file_once(path, rec.max_bytes);
+            RecordLoad::without_state(RecordLoadStatus::Corrupt)
+        }
+        Err(status) => RecordLoad::without_state(status),
+    }
+}
+
+fn serialize_record<T: Serialize>(
+    state: &T,
+    rec: &RecordFile,
+    validate: fn(&T) -> Result<(), &'static str>,
+) -> Result<Vec<u8>, String> {
+    validate(state).map_err(str::to_string)?;
+    let data = serde_json::to_vec(state)
+        .map_err(|err| format!("failed to serialize {}: {err}", rec.name))?;
+    if data.len() > rec.max_bytes {
+        return Err(format!(
+            "serialized {} exceeds max allowed file size",
+            rec.name
+        ));
+    }
+    Ok(data)
+}
+
+fn persist_record_to_path<T: Serialize>(
+    path: &Path,
+    state: &T,
+    rec: &RecordFile,
+    validate: fn(&T) -> Result<(), &'static str>,
+) -> Result<(), String> {
+    let data = serialize_record(state, rec, validate)?;
+    record_slot_replaceable(path, rec)?;
+    write_atomic_private(path, &data)
+}
+
+/// Removes the record file (never its `.bak`, never anything else). A
+/// missing file is already clear; a newer-schema, over-cap or unreadable
+/// record is refused and left in place (`record_slot_replaceable`).
+fn remove_record_at_path(path: &Path, rec: &RecordFile) -> Result<(), String> {
+    match std::fs::symlink_metadata(path) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(format!("failed to inspect {}: {err}", rec.label)),
+        Ok(meta) if meta.file_type().is_dir() => {
+            Err(format!("{} path is not a regular file", rec.name))
+        }
+        Ok(_) => {
+            record_slot_replaceable(path, rec)?;
+            // A symlink is removed as a link; its target is never touched.
+            std::fs::remove_file(path)
+                .map_err(|err| format!("failed to remove {}: {err}", rec.label))
+        }
+    }
+}
+
+/// The in-memory half of a record store (`CountdownStore`, `LayoutStore`):
+/// in smoke mode the record lives only in `slot` and no path is resolved.
+fn record_load_with_path<T: Clone + serde::de::DeserializeOwned, F>(
+    in_memory_only: bool,
+    slot: &Mutex<Option<T>>,
+    rec: &RecordFile,
+    validate: fn(&T) -> Result<(), &'static str>,
+    resolve_path: F,
+) -> Result<RecordLoad<T>, String>
+where
+    F: FnOnce() -> Result<PathBuf, String>,
+{
+    let memory = slot
+        .lock()
+        .map_err(|_| format!("{} lock poisoned", rec.name))?;
+    if in_memory_only {
+        return Ok(match memory.as_ref() {
+            Some(state) => RecordLoad {
+                state: Some(state.clone()),
+                status: RecordLoadStatus::Ok,
+            },
+            None => RecordLoad::without_state(RecordLoadStatus::Empty),
+        });
+    }
+    Ok(match resolve_path() {
+        Ok(path) => load_record_from_path(&path, rec, validate),
+        Err(_) => RecordLoad::without_state(RecordLoadStatus::Unreadable),
+    })
+}
+
+/// Validates first, writes the file (unless in memory only), and only then
+/// updates the in-memory copy, so a refused save changes nothing.
+fn record_save_with_path<T: Serialize, F>(
+    in_memory_only: bool,
+    slot: &Mutex<Option<T>>,
+    state: T,
+    rec: &RecordFile,
+    validate: fn(&T) -> Result<(), &'static str>,
+    resolve_path: F,
+) -> Result<(), String>
+where
+    F: FnOnce() -> Result<PathBuf, String>,
+{
+    validate(&state).map_err(str::to_string)?;
+    let mut memory = slot
+        .lock()
+        .map_err(|_| format!("{} lock poisoned", rec.name))?;
+    if !in_memory_only {
+        let path = resolve_path()?;
+        persist_record_to_path(&path, &state, rec, validate)?;
+    }
+    *memory = Some(state);
+    Ok(())
+}
+
+fn record_clear_with_path<T, F>(
+    in_memory_only: bool,
+    slot: &Mutex<Option<T>>,
+    rec: &RecordFile,
+    resolve_path: F,
+) -> Result<(), String>
+where
+    F: FnOnce() -> Result<PathBuf, String>,
+{
+    let mut memory = slot
+        .lock()
+        .map_err(|_| format!("{} lock poisoned", rec.name))?;
+    if !in_memory_only {
+        let path = resolve_path()?;
+        remove_record_at_path(&path, rec)?;
+    }
+    *memory = None;
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
 // Countdown persistence (plan A2)
 // ---------------------------------------------------------------------------
 
@@ -694,9 +1004,15 @@ pub const COUNTDOWN_NEWER_SCHEMA: &str = "countdown_newer_schema";
 /// The refusal `countdown_save` / `countdown_clear` return for an existing
 /// file that is over the cap or cannot be read.
 pub const COUNTDOWN_UNREADABLE: &str = "countdown_unreadable";
-/// How much of an over-cap countdown file is read to look for a newer
-/// `schemaVersion` before it is treated as invalid.
-const COUNTDOWN_SNIFF_MAX_BYTES: usize = 64 * 1024;
+
+const COUNTDOWN_FILE: RecordFile = RecordFile {
+    name: "countdown",
+    label: "countdown file",
+    max_bytes: COUNTDOWN_MAX_FILE_BYTES,
+    schema_version: COUNTDOWN_SCHEMA_VERSION,
+    newer_schema: COUNTDOWN_NEWER_SCHEMA,
+    unreadable: COUNTDOWN_UNREADABLE,
+};
 
 /// The saved countdown target. `targetTime` is `""` or `HH:MM`;
 /// `finishedSeenAtMs` is `null` until the UI first shows it finished.
@@ -711,47 +1027,14 @@ pub struct CountdownState {
     pub finished_seen_at_ms: Option<u64>,
 }
 
-/// `countdown_load` status strings.
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub enum CountdownLoadStatus {
-    /// A valid v1 record.
-    Ok,
-    /// No record.
-    Empty,
-    /// Written by a newer build: ignored, never written or backed up.
-    Newer,
-    /// Invalid: `countdown.json.bak` was attempted (an over-cap file is
-    /// renamed aside instead), the record is ignored.
-    Corrupt,
-    /// Exists but could not be read (lock, permission, symlink, not a
-    /// regular file, or over the cap and could not be moved aside).
-    Unreadable,
-}
+/// `countdown_load` status strings (shared with `layout_load`).
+pub type CountdownLoadStatus = RecordLoadStatus;
 
 /// `{"state": CountdownState | null, "status": "ok" | "empty" | …}`.
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct CountdownLoad {
-    pub state: Option<CountdownState>,
-    pub status: CountdownLoadStatus,
-}
-
-impl CountdownLoad {
-    fn without_state(status: CountdownLoadStatus) -> Self {
-        Self {
-            state: None,
-            status,
-        }
-    }
-}
+pub type CountdownLoad = RecordLoad<CountdownState>;
 
 pub fn countdown_file_path(app: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|err| format!("failed to resolve app data dir: {err}"))?;
-    Ok(dir.join("countdown.json"))
+    app_data_file_path(app, "countdown.json")
 }
 
 fn input_kind(key: &str) -> Option<InputKind> {
@@ -785,149 +1068,131 @@ pub fn validate_countdown_state(state: &CountdownState) -> Result<(), &'static s
     Ok(())
 }
 
-/// Parses a countdown record from raw JSON. `schemaVersion` is read first,
-/// so a newer record is recognised without a strict parse.
-fn parse_countdown_value(value: Value) -> Result<CountdownState, CountdownLoadStatus> {
-    if !value.is_object() {
-        return Err(CountdownLoadStatus::Corrupt);
-    }
-    if declares_newer_schema(&value, COUNTDOWN_SCHEMA_VERSION) {
-        return Err(CountdownLoadStatus::Newer);
-    }
-    if value.get("schemaVersion").and_then(Value::as_u64) != Some(COUNTDOWN_SCHEMA_VERSION) {
-        return Err(CountdownLoadStatus::Corrupt);
-    }
-    let state = CountdownState::deserialize(value).map_err(|_| CountdownLoadStatus::Corrupt)?;
-    validate_countdown_state(&state).map_err(|_| CountdownLoadStatus::Corrupt)?;
-    Ok(state)
+// The countdown commands call the shared record helpers directly; these
+// per-file entry points keep the v1.1.0 countdown tests readable.
+
+#[cfg(test)]
+fn load_countdown_from_path(path: &Path) -> CountdownLoad {
+    load_record_from_path(path, &COUNTDOWN_FILE, validate_countdown_state)
 }
 
-/// True when `bytes` are a JSON object that declares a newer schema.
-fn countdown_bytes_are_newer(bytes: &[u8]) -> bool {
-    serde_json::from_slice::<Value>(bytes).is_ok_and(|value| {
-        value.is_object() && declares_newer_schema(&value, COUNTDOWN_SCHEMA_VERSION)
-    })
-}
-
-/// True when an over-cap countdown file still declares a newer schema: a
-/// newer build may write a larger record, so its `schemaVersion` is read from
-/// up to `COUNTDOWN_SNIFF_MAX_BYTES` before the file is treated as invalid.
-fn oversize_countdown_is_newer(path: &Path) -> bool {
-    read_regular_file_limited(path, COUNTDOWN_SNIFF_MAX_BYTES, "countdown file")
-        .is_ok_and(|bytes| countdown_bytes_are_newer(&bytes))
-}
-
-/// Plan A2: `countdown_save` and `countdown_clear` replace or remove only a
-/// missing file, a symlink (never written through: `write_atomic_private`
-/// refuses it, clear removes the link itself) or a readable record of this
-/// schema, valid or corrupt (a corrupt one was backed up at load). A
-/// newer-schema record, a file over the cap or one that cannot be read is
-/// refused here, whatever the UI believes.
-fn countdown_slot_replaceable(path: &Path) -> Result<(), String> {
-    let meta = match std::fs::symlink_metadata(path) {
-        Ok(meta) => meta,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(_) => return Err(COUNTDOWN_UNREADABLE.to_string()),
-    };
-    if meta.file_type().is_symlink() {
-        return Ok(());
-    }
-    if meta.file_type().is_file() && meta.len() > COUNTDOWN_MAX_FILE_BYTES as u64 {
-        return Err(if oversize_countdown_is_newer(path) {
-            COUNTDOWN_NEWER_SCHEMA
-        } else {
-            COUNTDOWN_UNREADABLE
-        }
-        .to_string());
-    }
-    let bytes = read_regular_file_limited(path, COUNTDOWN_MAX_FILE_BYTES, "countdown file")
-        .map_err(|_| COUNTDOWN_UNREADABLE.to_string())?;
-    if countdown_bytes_are_newer(&bytes) {
-        return Err(COUNTDOWN_NEWER_SCHEMA.to_string());
-    }
-    Ok(())
-}
-
-/// Plan A2, a regular file over the 1 KiB cap. This build never writes one,
-/// so unless it declares a newer schema (left alone, status `newer`) it is
-/// invalid. Its bytes are too large to copy into `countdown.json.bak`, so
-/// the file is renamed aside whole (`move_aside`) and the slot becomes
-/// writable again (status `corrupt`). If it cannot be moved it stays
-/// `unreadable` and untouched.
-fn load_oversize_countdown(path: &Path) -> CountdownLoad {
-    if oversize_countdown_is_newer(path) {
-        return CountdownLoad::without_state(CountdownLoadStatus::Newer);
-    }
-    match move_aside(path) {
-        Ok(_) => CountdownLoad::without_state(CountdownLoadStatus::Corrupt),
-        Err(_) => CountdownLoad::without_state(CountdownLoadStatus::Unreadable),
-    }
-}
-
-pub fn load_countdown_from_path(path: &Path) -> CountdownLoad {
-    match std::fs::symlink_metadata(path) {
-        Ok(meta) if meta.file_type().is_file() && meta.len() > COUNTDOWN_MAX_FILE_BYTES as u64 => {
-            return load_oversize_countdown(path);
-        }
-        Ok(_) => {}
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            return CountdownLoad::without_state(CountdownLoadStatus::Empty);
-        }
-        Err(_) => return CountdownLoad::without_state(CountdownLoadStatus::Unreadable),
-    }
-    let Ok(bytes) = read_regular_file_limited(path, COUNTDOWN_MAX_FILE_BYTES, "countdown file")
-    else {
-        return CountdownLoad::without_state(CountdownLoadStatus::Unreadable);
-    };
-    let parsed = serde_json::from_slice::<Value>(&bytes)
-        .map_err(|_| CountdownLoadStatus::Corrupt)
-        .and_then(parse_countdown_value);
-    match parsed {
-        Ok(state) => CountdownLoad {
-            state: Some(state),
-            status: CountdownLoadStatus::Ok,
-        },
-        Err(CountdownLoadStatus::Corrupt) => {
-            backup_corrupt_file_once(path, COUNTDOWN_MAX_FILE_BYTES);
-            CountdownLoad::without_state(CountdownLoadStatus::Corrupt)
-        }
-        Err(status) => CountdownLoad::without_state(status),
-    }
-}
-
+#[cfg(test)]
 fn serialize_countdown(state: &CountdownState) -> Result<Vec<u8>, String> {
-    validate_countdown_state(state).map_err(str::to_string)?;
-    let data =
-        serde_json::to_vec(state).map_err(|err| format!("failed to serialize countdown: {err}"))?;
-    if data.len() > COUNTDOWN_MAX_FILE_BYTES {
-        return Err("serialized countdown exceeds max allowed file size".to_string());
-    }
-    Ok(data)
+    serialize_record(state, &COUNTDOWN_FILE, validate_countdown_state)
 }
 
+#[cfg(test)]
 fn persist_countdown_to_path(path: &Path, state: &CountdownState) -> Result<(), String> {
-    let data = serialize_countdown(state)?;
-    countdown_slot_replaceable(path)?;
-    write_atomic_private(path, &data)
+    persist_record_to_path(path, state, &COUNTDOWN_FILE, validate_countdown_state)
 }
 
 /// Removes `countdown.json` (never its `.bak`, never anything else). A
 /// missing file is already clear; a newer-schema, over-cap or unreadable
-/// record is refused and left in place (`countdown_slot_replaceable`).
+/// record is refused and left in place (`record_slot_replaceable`).
+#[cfg(test)]
 fn clear_countdown_at_path(path: &Path) -> Result<(), String> {
-    match std::fs::symlink_metadata(path) {
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(format!("failed to inspect countdown file: {err}")),
-        Ok(meta) if meta.file_type().is_dir() => {
-            Err("countdown path is not a regular file".to_string())
-        }
-        Ok(_) => {
-            countdown_slot_replaceable(path)?;
-            // A symlink is removed as a link; its target is never touched.
-            std::fs::remove_file(path)
-                .map_err(|err| format!("failed to remove countdown file: {err}"))
+    remove_record_at_path(path, &COUNTDOWN_FILE)
+}
+
+// ---------------------------------------------------------------------------
+// Card layout persistence (plan A8)
+// ---------------------------------------------------------------------------
+
+/// `layout.json`: the card order and the collapsed cards, kept apart from
+/// `settings.json` for the same reason as the countdown (a v1.1.0 binary
+/// must never treat a v1.2.0 settings file as corrupt).
+const LAYOUT_MAX_FILE_BYTES: usize = 1024;
+pub const LAYOUT_SCHEMA_VERSION: u64 = 1;
+/// The newer-schema refusal `layout_save` / `layout_reset` return.
+pub const LAYOUT_NEWER_SCHEMA: &str = "layout_newer_schema";
+/// The refusal `layout_save` / `layout_reset` return for an existing file
+/// that is over the cap or cannot be read.
+pub const LAYOUT_UNREADABLE: &str = "layout_unreadable";
+
+const LAYOUT_FILE: RecordFile = RecordFile {
+    name: "layout",
+    label: "layout file",
+    max_bytes: LAYOUT_MAX_FILE_BYTES,
+    schema_version: LAYOUT_SCHEMA_VERSION,
+    newer_schema: LAYOUT_NEWER_SCHEMA,
+    unreadable: LAYOUT_UNREADABLE,
+};
+
+/// The saved card layout. `cardOrder` lists each of the six card keys
+/// (`ALLOWED_CALCULATORS`) exactly once; `collapsedCards` holds unique
+/// valid keys in any order.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct LayoutState {
+    pub schema_version: u64,
+    pub card_order: Vec<String>,
+    pub collapsed_cards: Vec<String>,
+}
+
+impl LayoutState {
+    /// Plan A8 defaults: between, add, business, age, info, countdown, with
+    /// every card expanded.
+    pub fn default_layout() -> Self {
+        Self {
+            schema_version: LAYOUT_SCHEMA_VERSION,
+            card_order: ALLOWED_CALCULATORS
+                .iter()
+                .map(|key| (*key).to_string())
+                .collect(),
+            collapsed_cards: Vec::new(),
         }
     }
+}
+
+/// `{"state": LayoutState | null, "status": "ok" | "empty" | …}`.
+pub type LayoutLoad = RecordLoad<LayoutState>;
+
+pub fn layout_file_path(app: &AppHandle) -> Result<PathBuf, String> {
+    app_data_file_path(app, "layout.json")
+}
+
+/// Marks `key` in `seen` (indexed like `ALLOWED_CALCULATORS`). Fails on an
+/// unknown key or a key already marked.
+fn mark_card_key(seen: &mut [bool], key: &str) -> Result<(), ()> {
+    let index = ALLOWED_CALCULATORS
+        .iter()
+        .position(|allowed| *allowed == key)
+        .ok_or(())?;
+    if std::mem::replace(&mut seen[index], true) {
+        return Err(());
+    }
+    Ok(())
+}
+
+/// Schema 1; `cardOrder` is a permutation of the six card keys (six entries,
+/// each valid, none repeated); `collapsedCards` has no unknown or repeated
+/// key (so at most six).
+pub fn validate_layout_state(state: &LayoutState) -> Result<(), &'static str> {
+    if state.schema_version != LAYOUT_SCHEMA_VERSION {
+        return Err("unsupported layout schemaVersion");
+    }
+    if state.card_order.len() != ALLOWED_CALCULATORS.len() {
+        return Err("layout cardOrder must list every card exactly once");
+    }
+    let mut ordered = [false; ALLOWED_CALCULATORS.len()];
+    for key in &state.card_order {
+        mark_card_key(&mut ordered, key)
+            .map_err(|_| "layout cardOrder must list every card exactly once")?;
+    }
+    if state.collapsed_cards.len() > ALLOWED_CALCULATORS.len() {
+        return Err("invalid layout collapsedCards");
+    }
+    let mut collapsed = [false; ALLOWED_CALCULATORS.len()];
+    for key in &state.collapsed_cards {
+        mark_card_key(&mut collapsed, key).map_err(|_| "invalid layout collapsedCards")?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn load_layout_from_path(path: &Path) -> LayoutLoad {
+    load_record_from_path(path, &LAYOUT_FILE, validate_layout_state)
 }
 
 // ---------------------------------------------------------------------------
@@ -1636,23 +1901,13 @@ fn countdown_load_with_path<F>(
 where
     F: FnOnce() -> Result<PathBuf, String>,
 {
-    let memory = store
-        .state
-        .lock()
-        .map_err(|_| "countdown lock poisoned".to_string())?;
-    if store.in_memory_only {
-        return Ok(match memory.as_ref() {
-            Some(state) => CountdownLoad {
-                state: Some(state.clone()),
-                status: CountdownLoadStatus::Ok,
-            },
-            None => CountdownLoad::without_state(CountdownLoadStatus::Empty),
-        });
-    }
-    Ok(match resolve_path() {
-        Ok(path) => load_countdown_from_path(&path),
-        Err(_) => CountdownLoad::without_state(CountdownLoadStatus::Unreadable),
-    })
+    record_load_with_path(
+        store.in_memory_only,
+        &store.state,
+        &COUNTDOWN_FILE,
+        validate_countdown_state,
+        resolve_path,
+    )
 }
 
 #[tauri::command]
@@ -1671,17 +1926,14 @@ fn countdown_save_with_path<F>(
 where
     F: FnOnce() -> Result<PathBuf, String>,
 {
-    validate_countdown_state(&state).map_err(str::to_string)?;
-    let mut memory = store
-        .state
-        .lock()
-        .map_err(|_| "countdown lock poisoned".to_string())?;
-    if !store.in_memory_only {
-        let path = resolve_path()?;
-        persist_countdown_to_path(&path, &state)?;
-    }
-    *memory = Some(state);
-    Ok(())
+    record_save_with_path(
+        store.in_memory_only,
+        &store.state,
+        state,
+        &COUNTDOWN_FILE,
+        validate_countdown_state,
+        resolve_path,
+    )
 }
 
 #[tauri::command]
@@ -1697,16 +1949,12 @@ fn countdown_clear_with_path<F>(store: &CountdownStore, resolve_path: F) -> Resu
 where
     F: FnOnce() -> Result<PathBuf, String>,
 {
-    let mut memory = store
-        .state
-        .lock()
-        .map_err(|_| "countdown lock poisoned".to_string())?;
-    if !store.in_memory_only {
-        let path = resolve_path()?;
-        clear_countdown_at_path(&path)?;
-    }
-    *memory = None;
-    Ok(())
+    record_clear_with_path(
+        store.in_memory_only,
+        &store.state,
+        &COUNTDOWN_FILE,
+        resolve_path,
+    )
 }
 
 #[tauri::command]
@@ -1744,6 +1992,107 @@ fn smoke_countdown_roundtrip(store: &CountdownStore) -> Result<(), String> {
     let cleared = countdown_load_with_path(store, no_disk)?;
     if cleared != CountdownLoad::without_state(CountdownLoadStatus::Empty) {
         return Err("countdown was not cleared".to_string());
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Layout commands (plan A8)
+// ---------------------------------------------------------------------------
+
+fn layout_load_with_path<F>(store: &LayoutStore, resolve_path: F) -> Result<LayoutLoad, String>
+where
+    F: FnOnce() -> Result<PathBuf, String>,
+{
+    record_load_with_path(
+        store.in_memory_only,
+        &store.state,
+        &LAYOUT_FILE,
+        validate_layout_state,
+        resolve_path,
+    )
+}
+
+/// `{"state": LayoutState | null, "status": "ok" | "empty" | "newer" |
+/// "corrupt" | "unreadable"}`. Anything but `ok` means the UI uses the
+/// default layout; on `newer` it must not save (the save is refused anyway).
+#[tauri::command]
+pub fn layout_load(app: AppHandle, store: State<'_, LayoutStore>) -> Result<LayoutLoad, String> {
+    layout_load_with_path(&store, || layout_file_path(&app))
+}
+
+fn layout_save_with_path<F>(
+    store: &LayoutStore,
+    state: LayoutState,
+    resolve_path: F,
+) -> Result<(), String>
+where
+    F: FnOnce() -> Result<PathBuf, String>,
+{
+    record_save_with_path(
+        store.in_memory_only,
+        &store.state,
+        state,
+        &LAYOUT_FILE,
+        validate_layout_state,
+        resolve_path,
+    )
+}
+
+#[tauri::command]
+pub fn layout_save(
+    app: AppHandle,
+    store: State<'_, LayoutStore>,
+    state: LayoutState,
+) -> Result<(), String> {
+    layout_save_with_path(&store, state, || layout_file_path(&app))
+}
+
+/// Settings → Layout → "Reset card order & expand all": writes the default
+/// layout (so the next launch reads `ok` with the defaults). A newer-schema
+/// or unreadable `layout.json` is refused and left in place, like a save.
+fn layout_reset_with_path<F>(store: &LayoutStore, resolve_path: F) -> Result<(), String>
+where
+    F: FnOnce() -> Result<PathBuf, String>,
+{
+    layout_save_with_path(store, LayoutState::default_layout(), resolve_path)
+}
+
+#[tauri::command]
+pub fn layout_reset(app: AppHandle, store: State<'_, LayoutStore>) -> Result<(), String> {
+    layout_reset_with_path(&store, || layout_file_path(&app))
+}
+
+/// The smoke test's layout check (run before `SMOKE_TEST_OK`): a refused bad
+/// record, then save → load → reset → load (the default) through the
+/// in-memory layout store. Refuses to run against the disk store.
+fn smoke_layout_roundtrip(store: &LayoutStore) -> Result<(), String> {
+    if !store.in_memory_only {
+        return Err("layout store is not in-memory".to_string());
+    }
+    let no_disk = || Err::<PathBuf, String>("smoke mode never touches the disk".to_string());
+    let keys = |list: &[&str]| -> Vec<String> { list.iter().map(|k| (*k).to_string()).collect() };
+    let sample = LayoutState {
+        schema_version: LAYOUT_SCHEMA_VERSION,
+        card_order: keys(&["countdown", "between", "business", "add", "info", "age"]),
+        collapsed_cards: keys(&["business", "age"]),
+    };
+    let mut duplicate = sample.clone();
+    duplicate.card_order[0] = "between".to_string();
+    if layout_save_with_path(store, duplicate, no_disk).is_ok() {
+        return Err("layout accepted a repeated card".to_string());
+    }
+    layout_save_with_path(store, sample.clone(), no_disk)?;
+    let loaded = layout_load_with_path(store, no_disk)?;
+    if loaded.status != RecordLoadStatus::Ok || loaded.state.as_ref() != Some(&sample) {
+        return Err("layout did not round-trip".to_string());
+    }
+    layout_reset_with_path(store, no_disk)?;
+    let reset = layout_load_with_path(store, no_disk)?;
+    if reset.status != RecordLoadStatus::Ok
+        || reset.state.as_ref() != Some(&LayoutState::default_layout())
+    {
+        return Err("layout reset did not restore the defaults".to_string());
     }
     Ok(())
 }
@@ -1971,6 +2320,7 @@ pub fn report_smoke_result(
     app: AppHandle,
     state: State<'_, SmokeState>,
     countdown: State<'_, CountdownStore>,
+    layout: State<'_, LayoutStore>,
     passed: bool,
     details: String,
 ) -> Result<(), &'static str> {
@@ -1985,14 +2335,19 @@ pub fn report_smoke_result(
         .unwrap_or(false);
     let countdown_result = smoke_countdown_roundtrip(&countdown);
     let countdown_ok = countdown_result.is_ok();
+    let layout_result = smoke_layout_roundtrip(&layout);
+    let layout_ok = layout_result.is_ok();
 
-    if passed && clipboard_ok && countdown_ok {
-        println!("SMOKE_TEST_OK: all renderer, IPC, clipboard, and countdown checks passed.");
+    if passed && clipboard_ok && countdown_ok && layout_ok {
+        println!(
+            "SMOKE_TEST_OK: all renderer, IPC, clipboard, countdown, and layout checks passed."
+        );
         app.exit(0);
     } else {
         let countdown_err = countdown_result.err().unwrap_or_default();
+        let layout_err = layout_result.err().unwrap_or_default();
         eprintln!(
-            "SMOKE_TEST_FAILED: passed={passed} clipboard_ok={clipboard_ok} countdown_ok={countdown_ok} countdown=[{countdown_err}] details=[{details}]"
+            "SMOKE_TEST_FAILED: passed={passed} clipboard_ok={clipboard_ok} countdown_ok={countdown_ok} countdown=[{countdown_err}] layout_ok={layout_ok} layout=[{layout_err}] details=[{details}]"
         );
         app.exit(1);
     }
@@ -4830,6 +5185,485 @@ mod tests {
         assert_eq!(date_core::ENGINE_VERSION, EXPECTED_ENGINE_VERSION);
         let conf: Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
         assert_eq!(conf["version"], json!(env!("CARGO_PKG_VERSION")));
-        assert_eq!(env!("CARGO_PKG_VERSION"), "1.1.0");
+        assert_eq!(env!("CARGO_PKG_VERSION"), "1.2.0");
+    }
+
+    // -----------------------------------------------------------------------
+    // v1.2.0: collapsible and reorderable cards (plan A8)
+    // -----------------------------------------------------------------------
+
+    fn keys(list: &[&str]) -> Vec<String> {
+        list.iter().map(|k| (*k).to_string()).collect()
+    }
+
+    fn sample_layout() -> LayoutState {
+        LayoutState {
+            schema_version: 1,
+            card_order: keys(&["business", "between", "countdown", "add", "age", "info"]),
+            collapsed_cards: keys(&["info", "between"]),
+        }
+    }
+
+    fn disk_layout_store() -> LayoutStore {
+        LayoutStore {
+            in_memory_only: false,
+            state: Mutex::new(None),
+        }
+    }
+
+    #[test]
+    fn layout_roundtrip() {
+        assert_eq!(LAYOUT_MAX_FILE_BYTES, 1024);
+        let temp = TestTempDir::new("date-layout-roundtrip");
+        let path = temp.path().join("layout.json");
+        let store = disk_layout_store();
+        let at = || Ok(path.clone());
+
+        // The defaults are the plan A8 order, all expanded.
+        assert_eq!(
+            serde_json::to_value(LayoutState::default_layout()).unwrap(),
+            json!({
+                "schemaVersion": 1,
+                "cardOrder": ["between", "add", "business", "age", "info", "countdown"],
+                "collapsedCards": []
+            })
+        );
+        assert_eq!(
+            validate_layout_state(&LayoutState::default_layout()),
+            Ok(())
+        );
+
+        // No file: empty, nothing created.
+        let empty = layout_load_with_path(&store, at).unwrap();
+        assert_eq!(empty, LayoutLoad::without_state(RecordLoadStatus::Empty));
+        assert_eq!(
+            serde_json::to_value(&empty).unwrap(),
+            json!({"state": null, "status": "empty"})
+        );
+        assert!(!path.exists());
+
+        // Save → exact compact JSON on disk → load returns it.
+        layout_save_with_path(&store, sample_layout(), at).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            r#"{"schemaVersion":1,"cardOrder":["business","between","countdown","add","age","info"],"collapsedCards":["info","between"]}"#
+        );
+        let loaded = layout_load_with_path(&store, at).unwrap();
+        assert_eq!(loaded.status, RecordLoadStatus::Ok);
+        assert_eq!(loaded.state, Some(sample_layout()));
+        assert_eq!(
+            serde_json::to_value(&loaded).unwrap(),
+            json!({"state": serde_json::to_value(sample_layout()).unwrap(), "status": "ok"})
+        );
+        assert_eq!(store.state.lock().unwrap().as_ref(), Some(&sample_layout()));
+
+        // Every card collapsed is valid too.
+        let mut all = sample_layout();
+        all.collapsed_cards = keys(ALLOWED_CALCULATORS);
+        layout_save_with_path(&store, all.clone(), at).unwrap();
+        assert_eq!(load_layout_from_path(&path).state, Some(all.clone()));
+        // The largest valid record is far below the cap.
+        assert!(
+            serialize_record(&all, &LAYOUT_FILE, validate_layout_state)
+                .unwrap()
+                .len()
+                < 256
+        );
+
+        // Reset writes the defaults (not a removal): the next launch reads ok.
+        layout_reset_with_path(&store, at).unwrap();
+        assert_eq!(
+            load_layout_from_path(&path),
+            LayoutLoad {
+                state: Some(LayoutState::default_layout()),
+                status: RecordLoadStatus::Ok,
+            }
+        );
+        assert_eq!(
+            store.state.lock().unwrap().as_ref(),
+            Some(&LayoutState::default_layout())
+        );
+        assert_eq!(file_names(temp.path()), vec!["layout.json".to_string()]);
+
+        // The in-memory (smoke) store never resolves a path.
+        let memory = LayoutStore {
+            in_memory_only: true,
+            state: Mutex::new(None),
+        };
+        let never = || -> Result<PathBuf, String> { unreachable!("smoke store touched disk") };
+        assert_eq!(
+            layout_load_with_path(&memory, never).unwrap().status,
+            RecordLoadStatus::Empty
+        );
+        layout_save_with_path(&memory, sample_layout(), never).unwrap();
+        assert_eq!(
+            layout_load_with_path(&memory, never).unwrap().state,
+            Some(sample_layout())
+        );
+        layout_reset_with_path(&memory, never).unwrap();
+        assert_eq!(
+            layout_load_with_path(&memory, never).unwrap(),
+            LayoutLoad {
+                state: Some(LayoutState::default_layout()),
+                status: RecordLoadStatus::Ok,
+            }
+        );
+        assert_eq!(smoke_layout_roundtrip(&memory), Ok(()));
+        assert!(smoke_layout_roundtrip(&disk_layout_store()).is_err());
+        assert_eq!(file_names(temp.path()), vec!["layout.json".to_string()]);
+    }
+
+    #[test]
+    fn layout_rejects_missing_or_duplicate_key() {
+        let with_order = |order: &[&str]| {
+            let mut s = sample_layout();
+            s.card_order = keys(order);
+            s
+        };
+        let with_collapsed = |collapsed: &[&str]| {
+            let mut s = sample_layout();
+            s.collapsed_cards = keys(collapsed);
+            s
+        };
+        let bad = [
+            // A card missing.
+            with_order(&["between", "add", "business", "age", "info"]),
+            with_order(&[]),
+            // A card repeated (six entries, one missing).
+            with_order(&["between", "add", "business", "age", "info", "between"]),
+            // Seven entries.
+            with_order(&[
+                "between",
+                "add",
+                "business",
+                "age",
+                "info",
+                "countdown",
+                "add",
+            ]),
+            // A collapsed card repeated.
+            with_collapsed(&["age", "age"]),
+            with_collapsed(&[
+                "between",
+                "add",
+                "business",
+                "age",
+                "info",
+                "countdown",
+                "between",
+            ]),
+        ];
+        let temp = TestTempDir::new("date-layout-missing");
+        let path = temp.path().join("layout.json");
+        let store = disk_layout_store();
+        layout_save_with_path(&store, sample_layout(), || Ok(path.clone())).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        for (n, state) in bad.iter().enumerate() {
+            assert!(validate_layout_state(state).is_err(), "case {n}");
+            // A refused save writes nothing and keeps the previous record.
+            assert!(
+                layout_save_with_path(&store, state.clone(), || Ok(path.clone())).is_err(),
+                "case {n}"
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), before, "case {n}");
+            assert_eq!(
+                store.state.lock().unwrap().as_ref(),
+                Some(&sample_layout()),
+                "case {n}"
+            );
+            // The same record on disk is corrupt: backed up, defaults used.
+            let dir = temp.path().join(format!("case-{n}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            let bytes = serde_json::to_vec(state).unwrap();
+            std::fs::write(dir.join("layout.json"), &bytes).unwrap();
+            assert_eq!(
+                load_layout_from_path(&dir.join("layout.json")),
+                LayoutLoad::without_state(RecordLoadStatus::Corrupt),
+                "case {n}"
+            );
+            assert_eq!(
+                std::fs::read(dir.join("layout.json.bak")).unwrap(),
+                bytes,
+                "case {n}"
+            );
+        }
+        // A missing field (rather than a missing key) is rejected by the
+        // strict parse.
+        for field in ["schemaVersion", "cardOrder", "collapsedCards"] {
+            let mut value = serde_json::to_value(sample_layout()).unwrap();
+            value.as_object_mut().unwrap().remove(field);
+            assert!(
+                serde_json::from_value::<LayoutState>(value.clone()).is_err(),
+                "{field}"
+            );
+        }
+    }
+
+    #[test]
+    fn layout_rejects_unknown_key() {
+        // Unknown card keys, in either list, in any spelling.
+        for bad_key in [
+            "tax",
+            "",
+            "Between",
+            " between",
+            "between ",
+            "countdown\0",
+            "card-between",
+        ] {
+            let mut order = sample_layout();
+            order.card_order[2] = bad_key.to_string();
+            assert!(validate_layout_state(&order).is_err(), "{bad_key:?}");
+            let mut collapsed = sample_layout();
+            collapsed.collapsed_cards.push(bad_key.to_string());
+            assert!(validate_layout_state(&collapsed).is_err(), "{bad_key:?}");
+        }
+        // Unknown fields and wrong types: the strict parse refuses them.
+        let good = serde_json::to_value(sample_layout()).unwrap();
+        assert!(serde_json::from_value::<LayoutState>(good.clone()).is_ok());
+        let mut extra = good.clone();
+        extra["pinned"] = json!(["age"]);
+        let mut wrong_type = good.clone();
+        wrong_type["collapsedCards"] = json!("age");
+        let mut wrong_item = good.clone();
+        wrong_item["cardOrder"][0] = json!(1);
+        let mut string_schema = good.clone();
+        string_schema["schemaVersion"] = json!("1");
+        let mut old_schema = good.clone();
+        old_schema["schemaVersion"] = json!(0);
+        let mut unknown_card = good.clone();
+        unknown_card["cardOrder"][5] = json!("tax");
+
+        let temp = TestTempDir::new("date-layout-unknown");
+        for (name, value) in [
+            ("extra", extra),
+            ("wrong-type", wrong_type),
+            ("wrong-item", wrong_item),
+            ("string-schema", string_schema),
+            ("old-schema", old_schema),
+            ("unknown-card", unknown_card),
+        ] {
+            let dir = temp.path().join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("layout.json");
+            let bytes = serde_json::to_vec(&value).unwrap();
+            std::fs::write(&path, &bytes).unwrap();
+            let load = load_layout_from_path(&path);
+            assert_eq!(load.status, RecordLoadStatus::Corrupt, "{name}");
+            assert_eq!(load.state, None, "{name}");
+            assert_eq!(std::fs::read(dir.join("layout.json.bak")).unwrap(), bytes);
+        }
+        // The IPC boundary is just as strict: an extra field never reaches
+        // the validator.
+        assert!(serde_json::from_value::<LayoutState>(json!({
+            "schemaVersion": 1,
+            "cardOrder": ALLOWED_CALCULATORS,
+            "collapsedCards": [],
+            "theme": "dark"
+        }))
+        .is_err());
+    }
+
+    #[test]
+    fn layout_newer_schema_not_written() {
+        let temp = TestTempDir::new("date-layout-newer");
+        let path = temp.path().join("layout.json");
+        let bak = temp.path().join("layout.json.bak");
+        let store = disk_layout_store();
+        let mut big_newer = br#"{"schemaVersion":2,"cardOrder":[],"pad":""#.to_vec();
+        big_newer.extend(vec![b'p'; 2048]);
+        big_newer.extend(br#""}"#);
+        for bytes in [
+            br#"{"schemaVersion":2,"cardOrder":["between"],"pinned":["age"]}"#.to_vec(),
+            br#"{"schemaVersion":9}"#.to_vec(),
+            big_newer,
+        ] {
+            std::fs::write(&path, &bytes).unwrap();
+            let load = layout_load_with_path(&store, || Ok(path.clone())).unwrap();
+            assert_eq!(load, LayoutLoad::without_state(RecordLoadStatus::Newer));
+            assert_eq!(
+                serde_json::to_value(&load).unwrap(),
+                json!({"state": null, "status": "newer"})
+            );
+            // Never written over by a save or a reset, never backed up.
+            assert_eq!(
+                layout_save_with_path(&store, sample_layout(), || Ok(path.clone())),
+                Err(LAYOUT_NEWER_SCHEMA.to_string())
+            );
+            assert_eq!(
+                layout_reset_with_path(&store, || Ok(path.clone())),
+                Err(LAYOUT_NEWER_SCHEMA.to_string())
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            assert!(!bak.exists());
+            assert!(store.state.lock().unwrap().is_none());
+        }
+        assert_eq!(LAYOUT_NEWER_SCHEMA, "layout_newer_schema");
+
+        // An over-cap file that is not newer is moved aside whole; while it
+        // is there a save is refused as unreadable.
+        let over = vec![b'x'; LAYOUT_MAX_FILE_BYTES + 1];
+        std::fs::write(&path, &over).unwrap();
+        assert_eq!(
+            layout_save_with_path(&store, sample_layout(), || Ok(path.clone())),
+            Err(LAYOUT_UNREADABLE.to_string())
+        );
+        assert_eq!(
+            layout_reset_with_path(&store, || Ok(path.clone())),
+            Err(LAYOUT_UNREADABLE.to_string())
+        );
+        assert_eq!(LAYOUT_UNREADABLE, "layout_unreadable");
+        assert_eq!(
+            load_layout_from_path(&path),
+            LayoutLoad::without_state(RecordLoadStatus::Corrupt)
+        );
+        assert!(!path.exists());
+        assert_eq!(std::fs::read(&bak).unwrap(), over);
+        layout_save_with_path(&store, sample_layout(), || Ok(path.clone())).unwrap();
+        assert_eq!(load_layout_from_path(&path).state, Some(sample_layout()));
+
+        // A directory at the path is unreadable, and save/reset refuse it.
+        let dir_path = temp.path().join("dir").join("layout.json");
+        std::fs::create_dir_all(&dir_path).unwrap();
+        assert_eq!(
+            layout_load_with_path(&store, || Ok(dir_path.clone()))
+                .unwrap()
+                .status,
+            RecordLoadStatus::Unreadable
+        );
+        assert_eq!(
+            layout_save_with_path(&store, sample_layout(), || Ok(dir_path.clone())),
+            Err(LAYOUT_UNREADABLE.to_string())
+        );
+        assert!(layout_reset_with_path(&store, || Ok(dir_path.clone())).is_err());
+        assert!(dir_path.is_dir());
+
+        // A symlinked layout.json is never followed, read or written through.
+        let outside = temp.path().join("outside.json");
+        let outside_bytes = serde_json::to_vec(&sample_layout()).unwrap();
+        std::fs::write(&outside, &outside_bytes).unwrap();
+        let link_dir = temp.path().join("link");
+        std::fs::create_dir_all(&link_dir).unwrap();
+        let link = link_dir.join("layout.json");
+        if try_symlink_file(&outside, &link).is_some() {
+            assert_eq!(
+                load_layout_from_path(&link),
+                LayoutLoad::without_state(RecordLoadStatus::Unreadable)
+            );
+            assert!(layout_reset_with_path(&store, || Ok(link.clone())).is_err());
+            assert_eq!(std::fs::read(&outside).unwrap(), outside_bytes);
+            assert!(!link_dir.join("layout.json.bak").exists());
+        }
+    }
+
+    #[test]
+    fn layout_corrupt_bak_once() {
+        let temp = TestTempDir::new("date-layout-corrupt");
+        let cases: Vec<(&str, Vec<u8>)> = vec![
+            ("not-json", b"{\"schemaVersion\":1,".to_vec()),
+            ("empty", Vec::new()),
+            ("not-utf8", vec![0xff, 0xfe]),
+            ("not-object", b"[]".to_vec()),
+            ("no-schema", br#"{"cardOrder":[],"collapsedCards":[]}"#.to_vec()),
+            (
+                "duplicate",
+                br#"{"schemaVersion":1,"cardOrder":["age","age","add","business","info","countdown"],"collapsedCards":[]}"#
+                    .to_vec(),
+            ),
+        ];
+        for (name, bytes) in cases {
+            let dir = temp.path().join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("layout.json");
+            let bak = dir.join("layout.json.bak");
+            std::fs::write(&path, &bytes).unwrap();
+            assert_eq!(
+                load_layout_from_path(&path),
+                LayoutLoad::without_state(RecordLoadStatus::Corrupt),
+                "{name}"
+            );
+            assert_eq!(std::fs::read(&bak).unwrap(), bytes, "{name}");
+            // Loading the same bytes again: no state, no new backup.
+            let modified = std::fs::metadata(&bak).unwrap().modified().unwrap();
+            assert_eq!(load_layout_from_path(&path).state, None, "{name}");
+            assert_eq!(
+                std::fs::metadata(&bak).unwrap().modified().unwrap(),
+                modified,
+                "{name}"
+            );
+            // A save (here a reset) replaces the corrupt record and keeps
+            // the backup.
+            let store = disk_layout_store();
+            layout_reset_with_path(&store, || Ok(path.clone())).unwrap();
+            assert_eq!(
+                load_layout_from_path(&path).state,
+                Some(LayoutState::default_layout()),
+                "{name}"
+            );
+            assert_eq!(std::fs::read(&bak).unwrap(), bytes, "{name}");
+            assert_eq!(
+                file_names(&dir),
+                vec!["layout.json".to_string(), "layout.json.bak".to_string()]
+            );
+        }
+        // A later, different corruption replaces the older backup once.
+        let dir = temp.path().join("not-json");
+        std::fs::write(dir.join("layout.json"), b"{second").unwrap();
+        load_layout_from_path(&dir.join("layout.json"));
+        assert_eq!(
+            std::fs::read(dir.join("layout.json.bak")).unwrap(),
+            b"{second"
+        );
+    }
+
+    #[test]
+    fn layout_does_not_touch_settings() {
+        let temp = TestTempDir::new("date-layout-isolated");
+        let dir = temp.path();
+        let settings = dir.join("settings.json");
+        let history = dir.join("history.json");
+        let countdown = dir.join("countdown.json");
+        let settings_bytes = br#"{"checkUpdatesOnStartup":false,"injected":1}"#.to_vec();
+        let history_bytes = b"[not json".to_vec();
+        let countdown_bytes = serde_json::to_vec(&sample_countdown()).unwrap();
+        std::fs::write(&settings, &settings_bytes).unwrap();
+        std::fs::write(&history, &history_bytes).unwrap();
+        std::fs::write(&countdown, &countdown_bytes).unwrap();
+        let path = dir.join("layout.json");
+        let store = disk_layout_store();
+
+        layout_save_with_path(&store, sample_layout(), || Ok(path.clone())).unwrap();
+        layout_load_with_path(&store, || Ok(path.clone())).unwrap();
+        std::fs::write(&path, b"{corrupt").unwrap();
+        layout_load_with_path(&store, || Ok(path.clone())).unwrap();
+        layout_reset_with_path(&store, || Ok(path.clone())).unwrap();
+
+        assert_eq!(std::fs::read(&settings).unwrap(), settings_bytes);
+        assert_eq!(std::fs::read(&history).unwrap(), history_bytes);
+        assert_eq!(std::fs::read(&countdown).unwrap(), countdown_bytes);
+        assert_eq!(
+            file_names(dir),
+            vec![
+                "countdown.json".to_string(),
+                "history.json".to_string(),
+                "layout.json".to_string(),
+                "layout.json.bak".to_string(),
+                "settings.json".to_string()
+            ]
+        );
+        // The layout is not an AppSettings field, and the two records do not
+        // accept each other.
+        assert!(parse_settings_value(&json!({"layout": sample_layout()})).is_err());
+        assert!(parse_settings_value(&json!({"cardOrder": ALLOWED_CALCULATORS})).is_err());
+        let layout_value = serde_json::to_value(sample_layout()).unwrap();
+        assert_eq!(
+            parse_record_value(layout_value, &COUNTDOWN_FILE, validate_countdown_state),
+            Err(RecordLoadStatus::Corrupt)
+        );
+        let countdown_value = serde_json::to_value(sample_countdown()).unwrap();
+        assert_eq!(
+            parse_record_value(countdown_value, &LAYOUT_FILE, validate_layout_state),
+            Err(RecordLoadStatus::Corrupt)
+        );
     }
 }

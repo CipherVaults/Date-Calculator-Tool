@@ -259,6 +259,54 @@ History:
 
 ---
 
+### A8. Date Calculator v1.2.0: collapsible and reorderable cards
+*Added 2026-11-18 at the owner's request. It ports Percentage Calculator Tool v2.3.0's card layout.*
+
+**What the user gets**
+- **Collapse:** every card header gets a `[ − ]` / `[ + ]` button.
+  - A collapsed card shows only its title row, so it takes almost no scroll space.
+  - Its inputs keep their values while hidden, and its live results keep updating.
+  - The Countdown tick keeps running from absolute time, so expanding it shows the right value straight away.
+- **Reorder:** every card header gets a `⠿` drag handle.
+  - Dragging works by mouse, pen and touch (pointer events on the handle only; the handle uses `touch-action:none`, so the page still scrolls everywhere else).
+  - **Keyboard:** with the handle focused, ArrowUp/ArrowDown move the card one place. A polite status says "Moved Business Days to position 2 of 6."
+  - The quick-nav pills follow the card order.
+- **Remembered:** the order and the collapsed set are saved on this device and restored at launch.
+- **Opening a collapsed card expands it** (and saves that): from its quick-nav pill, from a history restore, or from an Edit-calendar link.
+- **Settings → Layout → "Reset card order & expand all"** restores the default order (between, add, business, age, info, countdown) and expands every card.
+
+**Storage: a separate record, not settings** (the same reason as A2: a v1.1.0 binary must never treat a v1.2.0 settings file as corrupt)
+
+| | Desktop | Mobile |
+|---|---|---|
+| Location | `%APPDATA%\com.datecalculator.tool\layout.json`, cap 1 KiB | localStorage `date_tool_layout_v1` |
+| Corruption | `.bak` once, then defaults | `_bak` once, then defaults |
+
+```json
+{"schemaVersion":1,"cardOrder":["between","add","business","age","info","countdown"],"collapsedCards":[]}
+```
+
+- `cardOrder` must contain each of the 6 keys exactly once. `collapsedCards` holds unique valid keys.
+- Raw `schemaVersion` is read first; a newer record is never written.
+- Commands: `layout_load() -> {state|null, status}`, `layout_save(state)`, `layout_reset()`. They reuse the A2 storage helpers, and smoke mode keeps them in memory.
+- The mobile `storage` event syncs other tabs, unless the user is mid-drag.
+
+**Phone-first details**
+- The handle and the collapse button are 44×44 px on coarse pointers.
+- A drag shows a gold drop line before or after the target card. Holding near the top or bottom edge auto-scrolls.
+- With `prefers-reduced-motion`, there are no transitions.
+- Collapse never sets `.style`; it toggles `card-collapsed`.
+
+**Tests**
+- Rust: `layout_roundtrip`, `layout_rejects_missing_or_duplicate_key`, `layout_rejects_unknown_key`, `layout_newer_schema_not_written`, `layout_corrupt_bak_once`, `layout_does_not_touch_settings`.
+- In-page smoke: collapse and expand persist; a pointer drag reorders the DOM, the nav and the store; the keyboard move works; reset restores defaults.
+- safety-eval B/C: `layout-collapse-persist`, `layout-pointer-reorder`, `layout-keyboard-reorder`, `layout-nav-follows-order`, `layout-open-expands` (quick-nav and history restore), `layout-reset`, `layout-bad-record-defaults`, `layout-storage-event`.
+- safety-eval D: the command allowlist and mutant proofs (collapse not saved, nav not synced, reset leaving one card collapsed, `.style` set during a drag).
+
+**Version:** app 1.2.0; the date-core engine stays 1.0.0. The old-app sunset release (B13/M11) becomes **Date v1.3.0**.
+
+---
+
 ## 2. Part B: Portable Calculator Tool v1.0.0
 
 ### B1. Repo and workspace
@@ -742,7 +790,7 @@ These are the languages most games and apps ship. More (Hindi, Indonesian, Polis
 **iOS:** home-screen storage is assumed isolated **[A]**. Data moves through the B13 export, by file or by paste.
 
 ### B13. Old apps' final releases (an owner yes for each)
-Date v1.2.0 and PCT v2.4.0 get:
+Date v1.3.0 and PCT v2.4.0 get:
 - a session-dismissible notice "Portable Calculator Tool replaces this app". It is not persisted, so the settings schema does not change.
 - **Export my data** in the B10 format, with **both** "Save file" and **"Copy export to clipboard"** (≤ 1 MiB; above that, file only with a warning).
 - a constant allowlisting exactly `https://github.com/CipherVaults/Portable-Calculator-Tool/releases` in `open_release_page`;
@@ -830,7 +878,7 @@ The clipboard export and the paste import are verified on an iOS home-screen ins
 | M9b | **Themes (B5b):** Daylight and Retro (95/98 with an XP nod), `System` option, per-theme graph/calendar tokens | AA contrast check passes for every theme; no wrong-theme flash; screenshots of every tool in all 3 themes at 390 px and desktop | — |
 | M9 | hardening, accessibility audit, docs, release notes | full checks; manual device checklist in the ledger | — |
 | M10 | v1.0.0 via PR dev→main | 5 assets; `sha256sum -c` passes; Pages live | **merge → release** |
-| M11 | Date v1.2.0, PCT v2.4.0 | notice, file+clipboard export verified on iOS, PCT history fix | **each merge and release** |
+| M11 | Date v1.3.0, PCT v2.4.0 | notice, file+clipboard export verified on iOS, PCT history fix | **each merge and release** |
 
 No time estimates are given **[A: the owner may ask for them after M1, once sizes and timings are measured]**. M2c (both old tools working in the new shell) is a natural internal checkpoint. It is not a public release.
 

@@ -1,4 +1,4 @@
-const CACHE_NAME = "date-tool-v1.1.0-mobile-1";
+const CACHE_NAME = "date-tool-v1.2.0-mobile-1";
 const PRECACHE_URLS = [
   "./",
   "./index.html",
