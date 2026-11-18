@@ -2,7 +2,7 @@
 
 ## Overview
 
-Date Calculator Tool **v1.0.0** is a **Tauri v2 + Rust** desktop application paired with a single-file **Mobile & Web PWA**. Both run one date engine: Rust `crates/date-core` on the desktop, and a line-by-line JavaScript mirror of it inside `mobile/index.html`. Tests and CI prove the two engines produce the same output.
+Date Calculator Tool **v1.2.0** (engine `date-core` 1.0.0) is a **Tauri v2 + Rust** desktop application paired with a single-file **Mobile & Web PWA**. Both run one date engine: Rust `crates/date-core` on the desktop, and a line-by-line JavaScript mirror of it inside `mobile/index.html`. Tests and CI prove the two engines produce the same output.
 
 The structure follows the sibling project, Percentage Calculator Tool v2.2.1. Where this document and the code disagree, the code wins ([SOURCE_OWNERSHIP_MAP.md](pbs/SOURCE_OWNERSHIP_MAP.md#-conflict-rules)). Where design specs disagree, [0- FROZEN_DECISIONS.md](specs/0-%20FROZEN_DECISIONS.md) wins.
 
@@ -10,7 +10,8 @@ The structure follows the sibling project, Percentage Calculator Tool v2.2.1. Wh
 +-----------------------------------------------------------------+
 | Desktop webview UI (ui/index.html, ui/styles.css, ui/main.js)   |
 |  - six cards, quick-jump bar, mini calendars, live formula      |
-|  - Settings (weekend, presets, Hijri, custom holidays), About   |
+|  - collapse [ − ]/[ + ], reorder by ⠿ handle, Move menu         |
+|  - Settings (weekend, presets, Hijri, holidays, Layout), About  |
 |  - history tape; per-card sequence counters drop stale replies  |
 +--------------------------------+--------------------------------+
                                  |
@@ -19,7 +20,8 @@ The structure follows the sibling project, Percentage Calculator Tool v2.2.1. Wh
 +-----------------------------------------------------------------+
 | Tauri shell (src-tauri/src/main.rs, src-tauri/src/commands.rs)  |
 |  - 9 engine commands -> date_core::api (same envelope as bridge)|
-|  - history_* / get_settings / set_settings                      |
+|  - history_* (incl. state/retry/reset), countdown_*, layout_*   |
+|  - get_settings / set_settings                                  |
 |  - check_for_updates (System32 curl.exe), open_release_page     |
 |  - copy_text (<= 4096 B), get_app_info, --smoke-test (20 s cap) |
 +----------------+-------------------------------+----------------+
@@ -30,15 +32,19 @@ The structure follows the sibling project, Percentage Calculator Tool v2.2.1. Wh
 | (crates/date-core)             | | - history.json (1 MiB cap)   |
 | - civil math, 6 modes          | | - settings.json (64 KiB cap, |
 | - calendar, US/UK/EG holidays  | |   one-time .bak on corrupt)  |
-| - business days, month_grid    | | - atomic private writes      |
-| - api: Strict + size caps      | | - clipboard-manager plugin   |
+| - business days, month_grid    | | - read-only history on error |
+| - api: Strict + size caps      | | - countdown.json, layout.json|
+|                                | |   (1 KiB caps each)          |
+|                                | | - atomic private writes      |
+|                                | | - clipboard-manager plugin   |
 +--------------------------------+ +------------------------------+
 
 +-----------------------------------------------------------------+
 | Mobile & Web PWA (mobile/index.html + sw.js + manifest + icons) |
 |  - inline <style>/<script> pinned by SHA-256 in a meta CSP      |
 |  - /* date-core:begin v1.0.0 */ ... /* date-core:end */ engine  |
-|  - localStorage history/settings, offline service worker        |
+|  - localStorage history/settings/countdown/layout               |
+|  - offline service worker                                       |
 +-----------------------------------------------------------------+
 ```
 
@@ -140,16 +146,18 @@ The calendar-aware requests embed the full `calendar`, so the Settings modal can
   - `copy_text_limits.rs`: worst-case `copyText` ≤1024 bytes per mode.
   - `safety_evaluations.rs`: paired benign/adversarial requests with Wilson, Newcombe and McNemar statistics.
 
-In total there are 104 date-core tests and 16 `src-tauri` tests (120 `#[test]` functions).
+In total there are 104 date-core tests and 36 `src-tauri` tests (140 `#[test]` functions).
 
 ### 3. Tauri desktop shell (`src-tauri/`)
 
-`src-tauri/src/main.rs` creates the window. It is 1120×860 with a minimum of 760×620 and background `#0E0F12` (`src-tauri/tauri.conf.json`), and loads `../ui`. It registers the clipboard-manager plugin and manages three states: `SmokeState`, `HistoryState` and `SettingsState`. It registers these 21 commands, all in `src-tauri/src/commands.rs`:
+`src-tauri/src/main.rs` creates the window. It is 1120×860 with a minimum of 760×620 and background `#0E0F12` (`src-tauri/tauri.conf.json`), and loads `../ui`. It registers the clipboard-manager plugin and manages five states: `SmokeState`, `HistoryState`, `CountdownStore`, `LayoutStore` and `SettingsState`. It registers these 30 commands, all in `src-tauri/src/commands.rs`:
 
 | Group | Commands |
 |---|---|
 | Engine (9) | `calc_days_between`, `calc_add_subtract`, `calc_business_days`, `calc_age`, `calc_date_info`, `calc_countdown`, `holidays_in_range`, `month_grid`, `validate_calendar`. Each takes `req: Option<Value>` and calls `run_op`, which applies the 64 KiB `CappedSink` check and then `date_core::api::call`. A missing or bad `req` returns the `invalid_request` envelope, never a Tauri error |
-| History (4) | `history_list`, `history_add`, `history_delete`, `history_clear` |
+| History (7) | `history_list`, `history_add`, `history_delete`, `history_clear`; since v1.1.0 `history_state`, `history_retry` and `history_reset` |
+| Countdown (3, v1.1.0) | `countdown_load`, `countdown_save`, `countdown_clear` |
+| Layout (3, v1.2.0) | `layout_load`, `layout_save`, `layout_reset` |
 | Settings (2) | `get_settings`, `set_settings` |
 | Updates (2) | `check_for_updates`, `open_release_page` |
 | Utility (2) | `copy_text`, `get_app_info` |
@@ -174,10 +182,17 @@ In total there are 104 date-core tests and 16 `src-tauri` tests (120 `#[test]` f
   - `deny_unknown_fields` on `HistoryEntry`, `NewHistoryEntry` and `HistoryInputs`.
   - Entries are validated again on load. `fit_history_to_file_cap` evicts the oldest entries when the file would pass 1 MiB.
   - Commands hold the lock across the disk write and change memory only after the write succeeds.
+  - **Read-only on read errors (v1.1.0, plan A3).** Any read failure other than "file not found" makes history read-only, and every write returns `history_read_only`. A corrupt file is copied to `history.json.bak` first. `history_state` reports the state, `history_retry` reads the file again, and `history_reset` ("Start a new history") always keeps a copy: it renames the file aside to `history.json.bak`, or to a fresh `history.json.bak-<ms>` when that name is taken.
 - **Settings:**
   - `AppSettings { checkUpdatesOnStartup, firstDayOfWeek, calendar, schemaVersion }` with `deny_unknown_fields`.
   - `calendar` is validated through `api::call(Op::ValidateCalendar)`, so it is accepted exactly when the engine accepts it.
   - A missing file loads defaults. A corrupt or invalid file is copied once to `settings.json.bak` (`backup_corrupt_file_once`), and the app loads defaults with `checkUpdatesOnStartup: false` (FROZEN §12).
+- **Countdown (v1.1.0, plan A2)** and **layout (v1.2.0, plan A8)** records:
+  - Each lives in its own file, `countdown.json` and `layout.json`, capped at 1 KiB, never inside `settings.json`. That way an older binary never treats a newer settings file as corrupt, and a bad record can never break settings.
+  - `CountdownState { schemaVersion, targetDate, targetTime, savedAtMs, finishedSeenAtMs }` and `LayoutState { schemaVersion, cardOrder, collapsedCards }`, both with `deny_unknown_fields`. `cardOrder` lists each of the six card keys exactly once.
+  - Both use the same hardened reads, atomic writes and one-time `.bak` for a corrupt file. A newer schema or an unreadable file is never written over: saves return `countdown_newer_schema` / `layout_newer_schema` or `countdown_unreadable` / `layout_unreadable`.
+  - `countdown_clear` removes only `countdown.json`, never its `.bak`.
+  - `layout_reset` writes the default layout (the six cards in order, all expanded) through the same guarded save. A newer or unreadable layout file is refused with `layout_newer_schema` / `layout_unreadable`.
 - **Update check** (`check_for_updates`):
   - Runs `%SystemRoot%\System32\curl.exe` (validated `SystemRoot`, `CREATE_NO_WINDOW`) with `--proto =https --proto-redir =https --tlsv1.2 --max-time 8 --max-filesize 65536` against `api.github.com/repos/CipherVaults/Date-Calculator-Tool/releases/latest`.
   - The release URL must start with `https://github.com/CipherVaults/Date-Calculator-Tool/releases/`.
@@ -185,9 +200,9 @@ In total there are 104 date-core tests and 16 `src-tauri` tests (120 `#[test]` f
   - `open_release_page` opens the fixed releases URL through `rundll32.exe url.dll,FileProtocolHandler`.
 - **Clipboard:** `copy_text` rejects text over 4096 bytes.
 - **Smoke mode** (`--smoke-test`):
-  - Hides the window, and history and settings live in memory only.
+  - Hides the window, and history, settings, the countdown and the layout live in memory only.
   - The UI runs its in-page checks (`ui/main.js`), writes the sentinel `date-tool-smoke-test` to the real clipboard, and calls `report_smoke_result`.
-  - Rust confirms the clipboard read-back and exits 0. On any failure it exits 1. A 20-second watchdog exits 1 if the renderer never reports.
+  - Rust confirms the clipboard read-back and runs a countdown round trip (save → load → clear → load) and a layout round trip (a refused bad record, then save → load → reset → load). Then it prints `SMOKE_TEST_OK` and exits 0. On any failure it exits 1. A 20-second watchdog exits 1 if the renderer never reports.
 
 ### 4. Desktop webview interface (`ui/`)
 
@@ -201,6 +216,16 @@ Plain HTML, CSS and JavaScript: no bundler, no npm, and no `innerHTML`, `outerHT
   - The countdown ticks on whole-second boundaries and pauses while hidden. It supplies `now` and per-instant UTC offsets, so the engine stays pure.
   - Caps clipboard text at 4096 bytes.
   - Contains the `--smoke-test` suite.
+- **Clickable mini calendars (v1.1.0):** a click on a day calls `setField` and then the card's updater, as a history restore does. Business Days has a Start/End switch, Shift sets the end, and typing a start moves the next click to the end. Keyboard navigation uses a roving tabindex (arrows, Home/End, PageUp/PageDown). Each calendar has a Today button and 44 px cells.
+- **Countdown restore (v1.1.0):** at launch `countdown_load` restores the target and the card shows *restored*, *finished* or *finished while closed*. **Forget** calls `countdown_clear`.
+- **Card layout (v1.2.0, plan A8, ported from Percentage Calculator Tool v2.3.0):**
+  - Every card header has a `⠿` drag handle (`.drag-handle`) and a `[ − ]` / `[ + ]` button (`.collapse-btn`, with `aria-expanded`).
+  - Collapsing only toggles the `card-collapsed` class: inputs keep their values and live results keep updating.
+  - Dragging uses pointer events on the handle only. A drag starts after 4 px with a mouse and 10 px with a finger or pen, so a tap never reorders by accident.
+  - With the handle focused, ArrowUp/ArrowDown move the card, and a polite status announces the new position.
+  - Tapping the handle opens a Move up / Move down / Done menu (`.card-move-menu`) that works with VoiceOver and TalkBack; at the ends the buttons are marked `aria-disabled`.
+  - The quick-jump bar follows the card order. Opening a collapsed card from its quick-jump pill, a history restore or an Edit-calendar link expands it.
+  - The order and the collapsed set are saved through `layout_save`. **Settings → Layout → "Reset card order & expand all"** calls `layout_reset`. A newer or unreadable record is never written; the layout then lasts for the session only, and the Settings note says so.
 
 ### 5. Mobile & Web PWA (`mobile/`)
 
@@ -216,12 +241,13 @@ Plain HTML, CSS and JavaScript: no bundler, no npm, and no `innerHTML`, `outerHT
   - It must not reference `Date`, `Intl`, `toISOString`, `getTimezoneOffset`, randomness, storage, the network or the DOM.
   - Any engine change lands in Rust, the JS mirror and the fixtures in the same commit.
 - **Storage:**
-  - `localStorage` keys `date_tool_history_v1` and `date_tool_settings_v1`, validated on read.
-  - A corrupt value is kept once as `<key>_bak`.
+  - `localStorage` keys `date_tool_history_v1`, `date_tool_settings_v1`, `date_tool_countdown_v1` (v1.1.0) and `date_tool_layout_v1` (v1.2.0), validated on read.
+  - A corrupt value is kept once as `<key>_bak`. A history reset keeps a copy as `date_tool_history_v1_bak` or `date_tool_history_v1_bak_<ms>`.
+  - The countdown, history safety and card layout behave as on the desktop.
   - When storage is blocked, an in-memory fallback is used, and a failed settings write is rolled back.
   - Cross-tab sync uses the `storage` event.
 - **Update check:** `fetch` to the GitHub API with an `AbortController` timeout and a 65,536-byte response cap. Release links are validated against the repository's releases prefix.
-- **Service worker** (`mobile/sw.js`, `CACHE_NAME = "date-tool-v1.0.0-mobile-1"`):
+- **Service worker** (`mobile/sw.js`, `CACHE_NAME = "date-tool-v1.2.0-mobile-1"`):
   - Precaches the shell, manifest and icons.
   - Same-origin, in-scope GET requests only. Only `200`, `basic`, non-redirected responses are cached.
   - App-shell navigations are network-first with the cached HTML as fallback, and assets are cache-first with background revalidation.
@@ -238,7 +264,9 @@ Plain HTML, CSS and JavaScript: no bundler, no npm, and no `innerHTML`, `outerHT
    - no `.style` writes in the mobile script;
    - local-only resources;
    - manifest, icons and precache files exist;
-   - one version across `tauri.conf.json`, both `Cargo.toml` files, mobile `APP_VERSION`, `CACHE_NAME` and both footers and About pills.
+   - one app version across `tauri.conf.json`, `src-tauri/Cargo.toml`, mobile `APP_VERSION`, `CACHE_NAME` and both footers and About pills;
+   - one engine version across `crates/date-core/Cargo.toml`, the `golden.json` header and the `date-core:begin` marker;
+   - the SHA-256 of the engine slice equals its pinned value (`ENGINE_SLICE_SHA256`), so the mobile engine cannot change without an engine version change.
 4. In one child process per time zone (`UTC`, `America/St_Johns`, `Pacific/Kiritimati`), the slice runs in `node:vm` with `Date` and `Intl` deleted. Each process replays all 13,965 golden cases comparing raw JSON bytes, and the 195 vectors.
 
 ### 6. Cross-surface safety evaluation (`scripts/safety-eval.mjs`)
@@ -248,17 +276,22 @@ Adapted from the reference harness. It has no dependencies, is seeded (default s
 | Slice | What it checks |
 |---|---|
 | A — Engine parity | Rust bridge vs the mobile engine slice (byte-identical) vs an independent JS oracle (summation day count, Zeller weekday, Thursday ISO week, Gauss Easter, US/UK fixed rules); bridge framing; envelope shape; mutations → `invalid_request`; determinism; metamorphic relations |
-| B — Mobile UI | `mobile/index.html` unmodified in a mini-DOM with a virtual clock (TZ `America/New_York`): live results, history, restore/clear, weekend and Egypt settings, hostile custom-holiday names rendered literally, DOM safety, countdown across both DST changes and midnight, corrupt and blocked storage, update-link sanitising |
-| C — Desktop UI | `ui/` with `invoke` routed to the Rust bridge: IPC routing, out-of-order IPC race, failed `set_settings` revert, the in-page smoke suite, and card text compared with the mobile UI on fixed and seeded inputs |
+| B — Mobile UI | `mobile/index.html` unmodified in a mini-DOM with a virtual clock (TZ `America/New_York`): live results, history, restore/clear, weekend and Egypt settings, hostile custom-holiday names rendered literally, DOM safety, countdown across both DST changes and midnight, corrupt and blocked storage, update-link sanitising. Since v1.1.0: calendar clicks and keyboard, countdown restore and finished states, read-only history. Since v1.2.0: collapse, drag (including touch thresholds), keyboard and Move-menu reorder, and the layout store |
+| C — Desktop UI | `ui/` with `invoke` routed to the Rust bridge: IPC routing, out-of-order IPC race, failed `set_settings` revert, the in-page smoke suite, and card text compared with the mobile UI on fixed and seeded inputs. The same v1.1.0 and v1.2.0 probes as slice B run here, with a mock backend for the countdown, history and layout commands |
 | D — Static hygiene | `check-mobile.mjs`, desktop CSP and markup, the `invoke` command allowlist, holiday-id parity between Rust and JS, optional `--require-clean-git`, and four workflow criteria: `D.workflow-pins` (every `uses:` is a 40-hex SHA with a version comment), `D.workflow-persist-credentials`, `D.workflow-node-block-identical` and `D.workflow-release-gate` (only the push-to-`main`/`v*` job may write contents or run `gh release`). Each workflow criterion also plants mutants of the real files and must detect them |
 
-Every exception counts as a failure, so the tolerance for broken items is 0%. The ledger E-09 run passed 48/48 criteria with 34,631 assertions. With the four M8 workflow criteria, the current local run passes 52/52 criteria with 34,669 assertions.
+Every exception counts as a failure, so the tolerance for broken items is 0%. The ledger E-09 run passed 48/48 criteria with 34,631 assertions; v1.1.0 passed 87/87 (E-15). The v1.2.0 run (E-17) passes **107/107 criteria with 36,134 assertions**. Planted mutants of the real files prove that the new checks fail when the code they guard breaks.
 
 ### 7. Packaging & CI (M8–M9)
 
 Packaging is configured in `src-tauri/tauri.conf.json`: NSIS (`installMode: both`) and MSI targets, with the embedded WebView2 bootstrapper. `.gitattributes` forces LF on `mobile/`, `ui/`, `scripts/*.mjs` and the fixtures, because the CSP hashes are byte-exact. `core.autocrlf` is `false`.
 
-The CI workflows were added in M8 as `.github/workflows/build.yml` and `.github/workflows/pages.yml`, adapted from the reference. **Status: green on PR #1 and on `main` (2026-11-17); the `main` runs published the `v1.0.0` Release (`build.yml` run 44153914418) and deployed Pages (`pages.yml` run 44153914416)** (ledger E-12, E-13). As designed (FROZEN §14):
+The CI workflows were added in M8 as `.github/workflows/build.yml` and `.github/workflows/pages.yml`, adapted from the reference. **Status: green on every release PR and on `main`.** The `main` runs published:
+- `v1.0.0` on 2026-11-17 (`build.yml` run 44153914418, `pages.yml` run 44153914416; ledger E-12, E-13);
+- `v1.1.0` on 2026-11-18 (runs 44240488816 and 44240488781; E-16);
+- `v1.2.0` on 2026-11-18 (runs 44350086704 and 44350086651; E-17).
+
+As designed (FROZEN §14):
 
 1. **Ubuntu checks:**
    - `cargo fmt --check`, clippy `-D warnings`, `cargo test --locked` and `gen_golden --check`;
@@ -273,7 +306,17 @@ The CI workflows were added in M8 as `.github/workflows/build.yml` and `.github/
 3. **Release** (`contents: write`): runs only on a push to `main` or a `v*` tag. It checks that the tag matches the version, never overwrites an existing release, and uses `.github/release-notes-v<version>.md`. On a later push to `main` where `v<version>` already exists, it prints "preserving immutable tag and assets" and exits 0; a new release needs a version bump.
 4. **Pages:** deploys `mobile/` from `main` only, after re-running the mobile checks.
 
-All Actions are pinned to 40-character commit SHAs with `persist-credentials: false`. A check keeps the inline node block identical across workflows. Because a green push to `main` publishes the release, merging to `main` needs the owner's explicit yes.
+All Actions are pinned to 40-character commit SHAs with `persist-credentials: false`. A check keeps the inline node block identical across workflows. Since v1.1.0 the node blocks check the app version and the engine version separately, and the release job's PowerShell loop checks `src-tauri/Cargo.toml` against the app version (`tauri.conf.json`) and `crates/date-core/Cargo.toml` against `ENGINE_VERSION` in `lib.rs`. `EXPECTED_ENGINE_VERSION` in `src-tauri/src/commands.rs` is pinned by a desktop unit test and by safety-eval.
+
+Because a green push to `main` publishes the release, merging to `main` is gated. Since 2026-11-18 the coordinator may merge and release work that passed every check and was verified, under the owner's standing release authority. Anything else, and creating repositories or changing repository settings, still needs the owner.
+
+### 8. App and engine versions (v1.1.0, plan A4)
+
+The app version and the engine version are separate:
+- **App version** (now 1.2.0): `tauri.conf.json`, `src-tauri/Cargo.toml` and its `Cargo.lock` entry, mobile `APP_VERSION`, the `sw.js` `CACHE_NAME` and the footers. It changes with every release.
+- **Engine version** (still 1.0.0): `crates/date-core/Cargo.toml`, `ENGINE_VERSION` in `lib.rs`, the `golden.json` header, the `/* date-core:begin v1.0.0 */` marker and `EXPECTED_ENGINE_VERSION` in `src-tauri/src/commands.rs`. It changes only with a change in engine behaviour, together with `gen_golden -- --write`.
+
+This keeps an app-only release from regenerating the 22 MB golden fixture for an unchanged engine. Setting date-core or `golden.engine` to the app version fails CI and `check-mobile.mjs`.
 
 ---
 

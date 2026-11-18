@@ -1,6 +1,6 @@
 # Session Summary
 
-Factual record of the v1.0.0 build. Sources: `git log` on `dev` and the [Execution & Coding Ledger](pbs/EXECUTION_AND_CODING_LEDGER.md) (evidence IDs E-01 to E-14). Milestones are defined in [3- ROADMAP.md](3-%20ROADMAP.md).
+Factual record of the v1.0.0, v1.1.0 and v1.2.0 builds. Sources: `git log` on `dev` and the [Execution & Coding Ledger](pbs/EXECUTION_AND_CODING_LEDGER.md) (evidence IDs E-01 to E-17). Milestones are defined in [3- ROADMAP.md](3-%20ROADMAP.md) and, for v1.1.0 and v1.2.0, in Part A of [5- PORTABLE_CALCULATOR_PLAN.md](specs/5-%20PORTABLE_CALCULATOR_PLAN.md).
 
 ---
 
@@ -231,6 +231,96 @@ Deploy Mobile & Web PWA run 44153914416 was green in about 30 seconds.
 
 ---
 
+## Session: November 18th, 2026 - v1.1.0 and v1.2.0
+
+---
+
+## Time
+
+Start: November 17th, 2026, late evening, with the approved Portable Calculator plan recorded (`5b0749b`, 23:20)
+End: November 18th, 2026, with v1.2.0 recorded as published and verified (`c99cb98`, 18:54), followed by docs PR #6 (`68e9b93`)
+Commits: `5b0749b`, `96f72a7`, `65097d4`, `c66843a` (04:28), `be06e59`, `2b24700`, `e67637d`, `a9488cc`, `605a407` (14:22), `c99cb98` on `dev`; merge commits `7f46254` (PR #3, v1.1.0), `d5f667f` (PR #4), `c40fd4d` (PR #5, v1.2.0) and `68e9b93` (PR #6) on `main`
+
+---
+
+## Session Goal
+
+Build and release the Date Calculator part of the approved Portable Calculator plan (Part A): clickable calendars, a remembered countdown, safer history and separate app and engine versions as v1.1.0. Then add collapsible and reorderable cards as v1.2.0, at the owner's request.
+
+---
+
+## What We Worked On
+
+### 1. The plan of record (`5b0749b` → `65097d4`)
+
+- The owner approved [5- PORTABLE_CALCULATOR_PLAN.md](specs/5-%20PORTABLE_CALCULATOR_PLAN.md) on 2026-11-17. It merges this app and Percentage Calculator Tool into one app, Portable Calculator Tool.
+- Part A is the Date Calculator releases that come first. Part B is the merged app.
+- Owner clarifications at approval: no legacy history migration, a phone-first web app, and standing authority for fixes that matter.
+- The Mini Calculator, three themes and 12 languages were added to Part B.
+
+### 2. v1.1.0 build (E-15, `c66843a`)
+
+Built in a workflow: three parallel implementers (Rust, desktop UI, CI version split), then the mobile mirror, then safety-eval, then two independent reviews. The reviews raised 13 findings, all fixed. One was major: "Start a new history" could overwrite a history that had no backup.
+
+- **A1, clickable mini calendars** on Business Days, Date Info and Countdown:
+  - a click sets the date; Business Days has a Start/End switch, and Shift sets the end;
+  - typing a start moves the next click to the end;
+  - roving-tabindex keyboard navigation, a Today button and 44 px cells.
+- **A2, countdown persistence** in its own store (`countdown.json` / `date_tool_countdown_v1`). The card shows *restored*, *finished* or *finished while closed*, and **Forget** clears it.
+- **A3, history safety:**
+  - any read failure other than "file not found" makes history read-only, with Retry;
+  - a corrupt file is backed up first;
+  - "Start a new history" always keeps a copy.
+- **A4, app and engine versions split:** the app is 1.1.0 and the engine `date-core` stays 1.0.0. The CI node blocks, the release loop and `check-mobile.mjs` check them separately, and the mobile engine slice is pinned by its SHA-256.
+- New desktop commands: `countdown_load`, `countdown_save`, `countdown_clear`, `history_state`, `history_retry` and `history_reset`.
+
+After the reviews, the coordinator re-ran every check from PowerShell and found one more bug: typing a start date and then tapping a day overwrote the start. It was fixed before the commit. Headless Edge screenshots were taken at 390 px.
+
+Checks (E-15): fmt and clippy clean; `cargo test --workspace` all pass (desktop 30/30); `gen_golden --check` up to date; check-mobile PASS under 3 time zones; safety-eval 87/87 criteria, 35,475 assertions, 29 planted mutants caught; `--smoke-test` `SMOKE_TEST_OK` including a countdown round trip. Nov 3 typed + Nov 20 tapped = 13 business days.
+
+### 3. Release v1.1.0 (E-16)
+
+- The owner merged PR #3 at 2026-11-18T04:54:02Z (`7f46254`) and asked the coordinator to release 1.1 if it was fit.
+- Build & Verify run 44240488816 and Pages run 44240488781 on `main` were green.
+- Release `v1.1.0` was published at 2026-11-18T04:59:32Z, tag at `7f46254`, with 5 assets.
+- The coordinator downloaded it: `sha256sum -c` OK for 4/4 files, 0 CR bytes, and the mobile asset and the live Pages files are identical to `main`.
+- The downloaded portable exe passed `--smoke-test` (exit code 0, `SMOKE_TEST_OK` including the countdown; ProductVersion 1.1.0).
+- The README was brought up to date and reached `main` through PR #4 (`d5f667f`).
+
+### 4. v1.2.0 build (E-17, `a9488cc` → `605a407`)
+
+Plan item A8 was added on 2026-11-18 at the owner's request (`a9488cc`). It ports the card layout of Percentage Calculator Tool v2.3.0.
+
+- **Collapse:** every card header has a [ − ] / [ + ] button. A collapsed card keeps its inputs, and its live results keep updating.
+- **Reorder:**
+  - drag the ⠿ handle with a mouse, pen or finger, with a deliberate touch threshold;
+  - ArrowUp/ArrowDown on the focused handle;
+  - or tap the handle for a Move up / Move down / Done menu that works with VoiceOver and TalkBack (the ends are marked `aria-disabled`).
+- The quick-jump bar follows the card order.
+- **Remembered:** the layout is saved in its own store (`layout.json` / `date_tool_layout_v1`) with the same hardening as the countdown. **Settings → Layout → "Reset card order & expand all"** restores the default.
+- New desktop commands: `layout_load`, `layout_save` and `layout_reset`.
+
+The workflow had two reviews with 3 findings, all fixed: an accidental reorder on touch, no screen-reader way to reorder on phones, and focus lost after a drop. The coordinator added the `aria-disabled` Move-menu ends with a test, re-ran every check and took headless Edge screenshots at 390 px.
+
+Checks (E-17): fmt and clippy clean; `cargo test --workspace` all pass, 140 tests (104 date-core, 36 desktop); `gen_golden --check` up to date; check-mobile PASS; safety-eval 107/107 criteria, 36,134 assertions, with planted-mutant proofs; `--smoke-test` `SMOKE_TEST_OK` including the countdown and layout checks.
+
+### 5. Release v1.2.0 under the standing release authority (E-17)
+
+- On 2026-11-18 the owner wrote: "don't wait for my approval to release, I already grant it to you if you tested it and it's good".
+- PR #5 CI was green, and the coordinator merged it under that authority (`c40fd4d`).
+- Build & Verify run 44350086704 and Pages run 44350086651 on `main` were green.
+- Release `v1.2.0` was published at 2026-11-18T16:50:38Z, tag at `c40fd4d`, the "latest" release, with 5 files.
+- The coordinator downloaded it: `sha256sum -c` OK for 4/4 files, 0 CR bytes, and the mobile asset and the live Pages `index.html` / `sw.js` are identical to `main`.
+- The downloaded portable exe passed `--smoke-test` (exit code 0, `SMOKE_TEST_OK` including the countdown and layout; ProductVersion 1.2.0).
+- The docs reached `main` through PR #6 (`68e9b93`).
+- After that, the README previews were retaken from the v1.2.0 PWA and show the new card headers. They wait to be committed on `dev` and will reach `main` with the next docs PR.
+
+### 6. Portable Calculator Tool started
+
+The public repository [`CipherVaults/Portable-Calculator-Tool`](https://github.com/CipherVaults/Portable-Calculator-Tool) was created on 2026-11-18 on the owner's yes. Its M0 and M1 are done, and M2a (the phone-first shell) is in progress. The old-app sunset release is now planned as Date v1.3.0.
+
+---
+
 ## Key Concepts Learned
 
 ### 1. One engine needs a byte-level contract
@@ -249,16 +339,31 @@ A Rust engine and its JavaScript copy can only be proven identical when all text
 
 `SHA256SUMS.txt` written with CRLF on Windows looked correct, but `sha256sum -c` on Linux/macOS could not find any of the files. Writing it with explicit LF, and failing the build on any CR byte, keeps it usable everywhere.
 
+### 5. The app version and the engine version are different things
+
+Tying the engine to the app version would force a 22 MB golden regeneration for every release, even when the engine did not change. Separate versions, checked separately in CI, plus a pinned hash of the mobile engine slice, keep app releases cheap and engine changes visible.
+
+### 6. Never overwrite what you could not read
+
+Before v1.1.0, a history file that failed to load looked empty, and the next save replaced it. Treating any read failure as "read-only until Retry", and always keeping a copy before a reset, removes that data-loss path.
+
+### 7. Small separate stores keep old binaries safe
+
+The countdown and the layout each have their own small file instead of new fields in `settings.json`. An older binary that meets a newer settings file therefore never treats it as corrupt.
+
 ---
 
 ## Issues / Frictions
 
 - **Git Bash shadows the MSVC linker.** `/usr/bin/link` breaks Cargo builds, so Cargo and Tauri run from PowerShell only.
 - **PowerShell adds a UTF-8 BOM to piped stdin.** The bridge rejects that first line as `invalid_request`; start piped input with a blank line or use a file (ledger coding lessons).
-- **The startup update check returned 404** until the first release existed. Since 2026-11-17 `releases/latest` returns `v1.0.0`, which equals `APP_VERSION`, so no banner is expected.
+- **The startup update check returned 404** until the first release existed. `releases/latest` now returns `v1.2.0`, which equals `APP_VERSION` in v1.2.0, so no banner is expected there.
 - **`SHA256SUMS.txt` was written with CRLF** by PowerShell `Set-Content` on the Windows runner, which broke `sha256sum -c` on Linux/macOS. Found by PR #1 CI and fixed in `9c06553` (E-12).
 - **"Cancelled" PR checks** were older `pull_request` runs cancelled by the concurrency rule when a newer commit was pushed, not failures.
 - **The Notion PBS hub link was not visible to the connector.** The owner deferred the Notion hub ("skip notion for now").
+- **v1.1.0 reviews found a data-loss path:** "Start a new history" could overwrite a history with no backup. It was fixed before release, and the reset now always keeps a copy (E-15).
+- **A calendar UX bug slipped past both reviews:** typing a start date and then tapping a day overwrote the start. The coordinator found it while re-running the checks and fixed it before the commit (E-15).
+- **Touch and screen-reader reorder needed extra care in v1.2.0:** the reviews found an accidental reorder on touch, no screen-reader way to reorder on phones, and focus lost after a drop. All three were fixed (E-17).
 
 ---
 
@@ -276,9 +381,15 @@ A Rust engine and its JavaScript copy can only be proven identical when all text
   - 15 raw digits for amounts;
   - `Strict` rejects map-form enums;
   - the 1024-byte string cap.
-- Merging to `main` publishes a release, so it needs the owner's explicit yes.
+- Merging to `main` publishes a release, so it needs the owner's explicit yes. Since 2026-11-18 the standing release authority below covers tested and verified work.
 - The owner authorized the v1.0.0 merge on the condition that it was tested and judged ready. The coordinator merged PR #1 only after the E-12 checks, pinned to head commit `9c06553`.
 - A published release is not the owner's acceptance of v1.0.0; that stays an owner step.
+- The owner approved the Portable Calculator plan on 2026-11-17: no legacy history migration, and a phone-first web app.
+- App and engine versions are split (plan A4): the app moves with each release, and the engine stays 1.0.0 until its behaviour changes.
+- The countdown and the layout are stored apart from settings, each in its own hardened file or key.
+- The owner merged PR #3 for v1.1.0 and asked the coordinator to release it if it was fit.
+- **Standing release authority (2026-11-18):** the coordinator may merge to `main` and release work that passed every check and was verified. Creating repositories or changing repository settings still needs the owner. v1.2.0 was the first release made this way.
+- The old-app sunset release is planned as Date v1.3.0.
 
 ---
 
@@ -290,9 +401,14 @@ A Rust engine and its JavaScript copy can only be proven identical when all text
 | M4 backend | done, verified (E-08) |
 | M5 desktop UI | done, verified (E-09); release-exe smoke test passed in CI (E-12) and on the downloaded portable exe (E-13); native-window click-through not yet run |
 | M6 mobile PWA | done, verified (E-09); live on GitHub Pages (E-13); real-phone install not done (owner check) |
-| M7 safety-eval | done, verified (E-09); 52/52 with the workflow criteria |
+| M7 safety-eval | done, verified (E-09); 52/52 with the workflow criteria; now 107/107 criteria (E-17) |
 | M8 CI, docs, PR | done 2026-11-17: PR #1 with green CI on Ubuntu and Windows (E-12) |
 | M9 release | done 2026-11-17: owner-authorized merge `5a512a3`, Release `v1.0.0` with 5 assets including `SHA256SUMS.txt`, Pages live (E-13). "PWA installs" is verified only as service worker active and manifest served; real-phone install remains an owner check |
+| A1 calendars; A2 countdown persistence, history fix and version split | done, verified 2026-11-18 (E-15) |
+| A3 v1.1.0 release | done 2026-11-18: the owner merged PR #3 (`7f46254`); Release `v1.1.0` published and verified (E-16) |
+| A8 v1.2.0 card layout and release | done 2026-11-18: PR #5 merged under the standing release authority (`c40fd4d`); Release `v1.2.0` published and verified (E-17) |
+
+Milestone A3 is the v1.1.0 release; the history fix that shipped in it is plan item A3.
 
 ---
 
@@ -300,14 +416,20 @@ A Rust engine and its JavaScript copy can only be proven identical when all text
 
 ### Owner checks
 
-- Install the PWA on a real iPhone and Android phone.
+- Install and use the PWA on a real iPhone and Android phone.
+- Manual checks on the installed exe (calendars, countdown, card layout).
+- A screen-reader pass with VoiceOver and TalkBack.
 - Confirm that leaving the Egypt preset should keep the weekend unchanged (from M5).
-- Accept v1.0.0. A published release is not owner acceptance.
 
 ### Docs on `main`
 
-- On the owner's "Yes, merge docs", the doc updates made on `dev` after the release reached `main` through PR #2, merged as `0c3d6e0` (E-14).
-- A docs-only merge is safe: the release job keeps `v1.0.0` unchanged ("preserving immutable tag and assets"), and Pages does not run, because `pages.yml` only triggers on changes to `mobile/**` or its own file, so the live site is untouched.
+- Post-release docs reach `main` through docs-only PRs: #2 (`0c3d6e0`, E-14), #4 (`d5f667f`) and #6 (`68e9b93`).
+- A docs-only merge is safe: the release job keeps the existing tag and assets ("preserving immutable tag and assets"), and Pages does not run, because `pages.yml` only triggers on changes to `mobile/**` or its own file, so the live site is untouched.
+
+### Next work
+
+- Portable Calculator Tool in [`CipherVaults/Portable-Calculator-Tool`](https://github.com/CipherVaults/Portable-Calculator-Tool): M0 and M1 done, M2a (the phone-first shell) in progress.
+- The old-app sunset release, Date v1.3.0, comes later in that plan.
 
 ### Not run yet
 
@@ -319,14 +441,14 @@ A Rust engine and its JavaScript copy can only be proven identical when all text
 
 ## Session Outcome
 
-v1.0.0 is released. CI is green on GitHub, the owner-authorized merge published the Release with its 5 assets, and the PWA is live on GitHub Pages. What remains is the owner checks listed above and, with the owner's yes, bringing the post-release docs to `main`.
+v1.0.0, v1.1.0 and v1.2.0 are released. Each Release has its 5 files, verified after download, and the PWA on GitHub Pages is identical to `main`. v1.2.0 was released under the owner's standing release authority. What remains is the owner checks listed above, and the work moves on to Portable Calculator Tool.
 
 ---
 
 ## Confidence Level
 
-High for calculation correctness and parity: the `chrono` oracle, hand-verified tables, 13,965 golden cases under three time zones and the 52-criterion safety evaluation all pass.
+High for calculation correctness and parity: the `chrono` oracle, hand-verified tables, 13,965 golden cases under three time zones, 140 Rust tests and the 107-criterion safety evaluation all pass. The engine has not changed since v1.0.0, and its mobile copy is pinned by hash.
 
-High for the published files: the release assets match `SHA256SUMS.txt`, the downloaded portable exe passed the smoke test, and the live PWA files are byte-identical to the repository.
+High for the published files: the assets of every release match `SHA256SUMS.txt`, the downloaded portable exes passed the smoke test, and the live PWA files are identical to `main`.
 
-The remaining risk is in steps not yet run: the installers on a clean machine, installing on physical phones, and the phone-width layout on the live site (checked only locally). The binaries are unsigned.
+The remaining risk is in steps not yet run: the installers on a clean machine, installing and using the PWA on physical phones, manual checks on the installed exe, and a screen-reader pass. Phone width was checked only with headless 390 px screenshots. The binaries are unsigned.

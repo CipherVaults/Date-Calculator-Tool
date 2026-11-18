@@ -31,7 +31,7 @@ Commits follow the owner's *Git & GitHub Rhythm* (Claude skill `git-github-rhyth
 - **Remote:** public `CipherVaults/Date-Calculator-Tool`. Work happens on `dev`. `main` is reached only by PR from `dev`.
 - **Who does what:**
   - The coordinating maintainer integrates, commits and pushes `dev`. Parallel agents edit files but do not commit.
-  - Merging to `main`, tags and releases need the owner's explicit yes.
+  - Merging to `main`, tags and releases: allowed under the owner's standing release authority (2026-11-18: merge and release work that passed every check and was verified). Never release failing or unverified work. Creating repositories and changing repository settings still need the owner's explicit yes.
 - **One coherent step per commit.** Stage explicit paths, never a blanket `git add -A` while other agents are editing. Read the staged diff before committing.
 - **Message format:**
   - A plain-language subject.
@@ -47,7 +47,7 @@ Commits follow the owner's *Git & GitHub Rhythm* (Claude skill `git-github-rhyth
 ## 🔐 Permission checks
 
 - Private per-device state must not be read, cleared or exported without owner authority: `%APPDATA%\com.datecalculator.tool\{history,settings,countdown,layout}.json` and their backup copies (`history.json.bak`, `settings.json.bak`, `countdown.json.bak`, `layout.json.bak`, and timestamped `history.json.bak-<ms>` / `countdown.json.bak-<ms>` / `layout.json.bak-<ms>`), browser `localStorage` (including `date_tool_countdown_v1`, `date_tool_countdown_v1_bak`, `date_tool_layout_v1`, `date_tool_layout_v1_bak`, `date_tool_history_v1_bak` and `date_tool_history_v1_bak_<ms>`) and PWA caches.
-- Pushing to `main`, tags and releases is outward-facing. The release job auto-publishes on a green push to `main`, so merging requires the owner's explicit yes.
+- Pushing to `main`, tags and releases is outward-facing. The release job auto-publishes on a green push to `main`, so merge only work that passed every check and was verified (standing release authority (2026-11-18: merge and release work that passed every check and was verified)).
 
 ## ✅ Verification workflow
 
@@ -60,7 +60,7 @@ node scripts/safety-eval.mjs --json target/safety-eval-system-card.json
 cargo run -p date-calculator-tool --locked -- --smoke-test
 ```
 
-The full CI-equivalent checks live in `.github/workflows/build.yml`. Keep the inline node check block byte-identical in all three copies (two jobs in `build.yml`, one in `pages.yml`); safety-eval `D.workflow-node-block-identical` enforces it. `main` is the default branch and holds released code: every push to `main` runs the release job and the Pages deploy, so each merge needs the owner's explicit yes. With an unchanged version the release job keeps the existing tag and assets; a new release needs a version bump.
+The full CI-equivalent checks live in `.github/workflows/build.yml`. Keep the inline node check block byte-identical in all three copies (two jobs in `build.yml`, one in `pages.yml`); safety-eval `D.workflow-node-block-identical` enforces it. `main` is the default branch and holds released code: every push to `main` runs the release job and the Pages deploy, so each merge must be fully checked and verified first (standing release authority, 2026-11-18). With an unchanged version the release job keeps the existing tag and assets; a new release needs a version bump.
 
 ## 📦 Reporting and stopping
 

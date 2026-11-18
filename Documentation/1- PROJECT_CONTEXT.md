@@ -43,7 +43,7 @@ The project mirrors [Percentage Calculator Tool](https://github.com/CipherVaults
 
 ## Final Scope Definition
 
-### Included in the current version (v1.0.0)
+### Included in the current version (v1.2.0)
 
 - Cargo workspace with a pure engine crate (`crates/date-core`) and a Tauri v2 desktop shell (`src-tauri`)
 - Windows native title bar; window 1120×860, minimum 760×620, background `#0E0F12` (`src-tauri/tauri.conf.json`)
@@ -57,11 +57,21 @@ The project mirrors [Percentage Calculator Tool](https://github.com/CipherVaults
 - configurable weekend (Sat/Sun, Fri/Sat, Fri only, custom) and holiday presets for the US (federal), UK (England & Wales) and Egypt, plus custom holidays and per-holiday exclusions (`crates/date-core/src/calendar.rs`, `crates/date-core/src/holidays/`)
 - Egypt Islamic holidays from the tabular Hijri calendar, marked "estimated", with a −2..+2 day offset and up to 50 per-year overrides
 - 42-cell mini calendars on the Business Days, Date Info and Countdown cards, built by the engine's `month_grid`
+  - clickable since v1.1.0: a click sets the date; Business Days has a Start/End switch, Shift sets the end, and typing a start moves the next click to the end
+  - roving-tabindex keyboard navigation, a Today button and 44 px cells
+- collapsible and reorderable cards (v1.2.0):
+  - [ − ] / [ + ] on every card header
+  - reorder by dragging the ⠿ handle (mouse, pen or finger), ArrowUp/ArrowDown on the handle, or a tap-to-open Move up / Move down / Done menu that works with VoiceOver and TalkBack
+  - the quick-jump bar follows the card order
+  - Settings → Layout → "Reset card order & expand all"
 - "live formula" panel (`traceLines`) and copy buttons on every card
 - quick-jump navigation bar, Enter-to-calculate, swap buttons, dark Settings and About modals
 - persistent local history: up to 500 entries with filter, copy, restore and delete
   - desktop: `%APPDATA%\com.datecalculator.tool\history.json`
   - mobile: `localStorage` key `date_tool_history_v1`
+  - since v1.1.0, a history file that cannot be read makes history read-only (with Retry) instead of being overwritten; a corrupt file is backed up first, and "Start a new history" always keeps a copy
+- a remembered countdown (v1.1.0), in its own store: `countdown.json` / `date_tool_countdown_v1`; it shows *restored*, *finished* or *finished while closed*, and **Forget** clears it
+- a remembered card layout (v1.2.0), in its own store: `layout.json` / `date_tool_layout_v1`, with the same hardening
 - persistent settings including the calendar
   - desktop: `settings.json`, max 64 KiB
   - mobile: `date_tool_settings_v1`
@@ -80,10 +90,11 @@ The project mirrors [Percentage Calculator Tool](https://github.com/CipherVaults
   - copy-text limits;
   - adversarial safety cases;
   - the 13,965-case golden parity fixture;
-  - 16 backend tests;
-  - a real-window `--smoke-test`
+  - 36 backend tests (140 Rust tests in all, 104 of them in the engine);
+  - a real-window `--smoke-test` that also round-trips the countdown and layout stores
 - Node checks with no dependencies (`scripts/check-mobile.mjs`, `scripts/safety-eval.mjs`)
-- Windows NSIS and MSI installers, a portable `.exe`, the standalone mobile HTML and `SHA256SUMS.txt`, produced by CI and published as the GitHub Release `v1.0.0` on 2026-11-17
+- separate app and engine versions: the app is 1.2.0, and the engine `date-core` stays 1.0.0 until its behaviour changes
+- Windows NSIS and MSI installers, a portable `.exe`, the standalone mobile HTML and `SHA256SUMS.txt`, produced by CI and published as GitHub Releases `v1.0.0` (2026-11-17), `v1.1.0` and `v1.2.0` (both 2026-11-18)
 - PBS continuity records under `Documentation/pbs/`
 
 ---
@@ -143,7 +154,7 @@ The project is successful if:
 - the six calculators give the documented answers, and every hand-verified vector passes
 - the desktop engine and the mobile engine produce byte-identical JSON for every golden case, in any time zone
 - holidays match the published US, UK and Egypt tables in the test suite
-- history, settings, copy, update check and the mini calendars work on both editions
+- history, settings, copy, update check, the mini calendars, the remembered countdown and the card layout work on both editions
 - the security controls in [SECURITY_HARDENING_DOSSIER.md](pbs/SECURITY_HARDENING_DOSSIER.md) hold and are checked automatically
 - CI builds the Windows installers, portable `.exe`, mobile HTML and checksums, and deploys the PWA from `main`
 - the documentation and Git history explain what was built and why
@@ -152,10 +163,10 @@ The project is successful if:
 
 ## Current Final State
 
-At **v1.0.0 (released 2026-11-17)** the project is:
+At **v1.2.0 (released 2026-11-18)** the project is:
 
 - implemented as a Cargo workspace (`date-core` + `src-tauri`) with a static `ui/` frontend and a single-file `mobile/` PWA
-- verified locally on 2026-11-17 (ledger E-09):
+- v1.0.0 verified locally on 2026-11-17 (ledger E-09):
   - fmt, clippy `-D warnings` and `cargo test --workspace --locked` (120 tests; the `chrono` oracle covers 3,652,059 days);
   - `gen_golden --check`;
   - debug `--smoke-test`;
@@ -167,4 +178,10 @@ At **v1.0.0 (released 2026-11-17)** the project is:
   - PR #1 merged as `5a512a3` on `main`;
   - GitHub Release `v1.0.0` published with 5 assets; the downloaded files match `SHA256SUMS.txt`, and the downloaded portable exe passed `--smoke-test`;
   - the PWA is live on GitHub Pages, byte-identical to `mobile/`, with its service worker active
-- still open (not verified): installing the PWA on a real phone, running the installers on a clean machine, the Egypt-preset weekend check, and the owner's acceptance of v1.0.0. The Windows binaries are unsigned.
+- v1.1.0 done 2026-11-18 (ledger E-15, E-16): clickable calendars, countdown persistence, history safety and the app/engine version split; the owner merged PR #3 (`7f46254`), and Release `v1.1.0` was published at 04:59:32Z and verified
+- v1.2.0 done 2026-11-18 (ledger E-17): collapsible and reorderable cards with a remembered layout
+  - verified locally: 140 Rust tests (104 engine, 36 desktop), `gen_golden --check`, `check-mobile.mjs`, safety-eval 107/107 criteria (36,134 assertions) with planted-mutant proofs, and `--smoke-test` with the countdown and layout checks;
+  - PR #5 was merged under the owner's standing release authority (`c40fd4d`), and Release `v1.2.0` was published at 16:50:38Z;
+  - the 5 release files pass `sha256sum -c`, the downloaded portable exe passed `--smoke-test`, and Pages is identical to `main`
+- next: this app and Percentage Calculator Tool are being merged into Portable Calculator Tool (`CipherVaults/Portable-Calculator-Tool`, plan [5- PORTABLE_CALCULATOR_PLAN.md](specs/5-%20PORTABLE_CALCULATOR_PLAN.md)); its M0 and M1 are done and M2a (the phone-first shell) is in progress; the old-app sunset release is planned as Date v1.3.0
+- still open (not verified): using the PWA on a real phone, manual checks on the installed exe, a screen-reader pass, running the installers on a clean machine, and the Egypt-preset weekend check. The Windows binaries are unsigned.

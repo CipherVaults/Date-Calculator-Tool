@@ -27,9 +27,11 @@
 
 | # | Milestone | Done when | Status |
 |---|---|---|---|
-| A8 | Collapsible and reorderable cards | collapse, drag/keyboard reorder and reset work on desktop and phone; the layout is saved in its own store; checks green; **owner-approved** merge → v1.2.0 Release | done 2026-11-18 (PR #5 → `c40fd4d`; Release v1.2.0 verified, E-17) |
+| A8 | Collapsible and reorderable cards | collapse, drag/keyboard reorder and reset work on desktop and phone; the layout is saved in its own store; checks green; merge → v1.2.0 Release under the owner's standing release authority | done 2026-11-18 (PR #5 → `c40fd4d`; Release v1.2.0 verified, E-17) |
 
-After v1.1.0: Part B, Portable Calculator Tool v1.0.0, in a new repo (M0–M11 in the plan).
+**What comes next:**
+- **Part B:** Portable Calculator Tool v1.0.0 in [CipherVaults/Portable-Calculator-Tool](https://github.com/CipherVaults/Portable-Calculator-Tool), created 2026-11-18. M0 and M1 are done; M2a (phone-first shell) is in progress. Its own roadmap tracks M0–M11.
+- **Date v1.3.0 (later):** the sunset release, with a "replaced by Portable Calculator Tool" notice (plan B13).
 
 ## Backlog (proposed, not authorized)
 
