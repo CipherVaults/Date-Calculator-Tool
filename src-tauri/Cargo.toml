@@ -1,6 +1,6 @@
 [package]
 name = "date-calculator-tool"
-version = "1.0.0"
+version = "1.1.0"
 edition = "2021"
 description = "Offline desktop date calculator built with Tauri and Rust."
 authors = ["Mohamed Sayed", "Ahmed Emara", "Claude"]

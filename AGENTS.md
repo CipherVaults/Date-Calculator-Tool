@@ -20,7 +20,8 @@ This file holds the project's persistent execution instructions for AI and human
 - **DOM safety.** Use `textContent`/`createElement`/`replaceChildren` only. No `innerHTML`, `outerHTML`, `eval` or `new Function`. Mobile JS toggles classes and never sets `.style`.
 - **Mobile CSP.** Any byte change inside the mobile inline `<style>` or `<script>` requires recomputing its SHA-256 (Base64) in the CSP `<meta>`. Never put `frame-ancestors` in a meta CSP. Bump `CACHE_NAME` in `mobile/sw.js` on every mobile change.
 - **Line endings.** `git config core.autocrlf false`. `.gitattributes` forces LF on web, script and fixture files, because the CSP hashes are byte-exact.
-- **Version** must match in `tauri.conf.json`, both `Cargo.toml` files, mobile `APP_VERSION`, the `sw.js` cache name and the footers.
+- **App version** must match in `tauri.conf.json`, `src-tauri/Cargo.toml` (and its `Cargo.lock` entry), mobile `APP_VERSION`, the `sw.js` cache name and the footers.
+- **Engine version** is separate from the app version. It must match in `crates/date-core/Cargo.toml`, `ENGINE_VERSION`, the `golden.json` header, the mobile `/* date-core:begin vX.Y.Z */` marker and `EXPECTED_ENGINE_VERSION` in `src-tauri/src/commands.rs`. It changes only with a change in engine behaviour, together with a golden regeneration (`gen_golden -- --write`); an app release alone never bumps it.
 - **Windows.** Run Cargo/Tauri from **PowerShell**, never Git Bash: Git Bash's `/usr/bin/link` shadows the MSVC linker. Node and gh are fine in either shell.
 
 ## 🌿 Git & GitHub rhythm
@@ -45,7 +46,7 @@ Commits follow the owner's *Git & GitHub Rhythm* (Claude skill `git-github-rhyth
 
 ## 🔐 Permission checks
 
-- Private per-device state must not be read, cleared or exported without owner authority: `%APPDATA%\com.datecalculator.tool\{history,settings}.json`, browser `localStorage` and PWA caches.
+- Private per-device state must not be read, cleared or exported without owner authority: `%APPDATA%\com.datecalculator.tool\{history,settings,countdown}.json` and their backup copies (`history.json.bak`, `settings.json.bak`, `countdown.json.bak`, and timestamped `history.json.bak-<ms>` / `countdown.json.bak-<ms>`), browser `localStorage` (including `date_tool_countdown_v1`, `date_tool_countdown_v1_bak`, `date_tool_history_v1_bak` and `date_tool_history_v1_bak_<ms>`) and PWA caches.
 - Pushing to `main`, tags and releases is outward-facing. The release job auto-publishes on a green push to `main`, so merging requires the owner's explicit yes.
 
 ## ✅ Verification workflow

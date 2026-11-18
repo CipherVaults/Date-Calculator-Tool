@@ -22,11 +22,19 @@
 //      Calculate history, restore, clear, settings flows, Egypt Fri/Sat,
 //      literal rendering of hostile custom holiday names, countdown ticks
 //      across both DST changes and a 23:59:59 -> 00:00 rollover, corrupt
-//      localStorage -> `_bak` + defaults, update-link sanitising.
+//      localStorage -> `_bak` + defaults (corrupt history -> read-only),
+//      update-link sanitising. v1.1.0 (plan A6): clickable and keyboard
+//      mini calendars, Business Days range picks, the saved countdown
+//      (restore, finished while closed, no writes on ticks or input, Forget,
+//      bad records, other-tab sync) and the history read-only banner.
 //   C  Desktop UI. ui/index.html + ui/main.js in the same mini-DOM with a
 //      mocked window.__TAURI__.core.invoke: calc_* and the other engine
 //      commands go to the Rust bridge, history and settings live in memory
-//      (settings validated through the bridge's validate_calendar). Also runs
+//      (settings validated through the bridge's validate_calendar), and the
+//      v1.1.0 history_state/retry/reset and countdown_load/save/clear
+//      commands follow commands.rs over an in-memory "app data directory"
+//      (history.json(.bak), countdown.json(.bak), read errors). The same
+//      v1.1.0 probes as slice B run here. Also runs
 //      the desktop's own in-page smoke test, an out-of-order IPC race, a
 //      failed set_settings revert, and compares every card's rendered text
 //      with the mobile UI for the same inputs, both on the fixed walk-through
@@ -37,7 +45,10 @@
 //      markup, holiday-id parity between Rust and the mobile engine, the
 //      invoke command allowlist, and .github/workflows hygiene (SHA pins,
 //      persist-credentials: false, identical inline node blocks, release
-//      gate), each workflow check also proven to fail on planted mutants.
+//      gate), the app/engine version split, out-of-month cell contrast and
+//      44 px touch targets, each check also proven to fail on planted
+//      mutants; the v1.1.0 UI probes are also run on planted mutants of
+//      ui/main.js and the mobile script, and each must fail.
 //
 // Nothing here reads or writes real user data: localStorage is an in-memory
 // object, desktop history/settings live in the mock backend, and the only
@@ -53,7 +64,7 @@
 
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdirSync, mkdtempSync, openSync, readdirSync, readFileSync, readSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -61,11 +72,14 @@ import vm from "node:vm";
 
 const SELF = fileURLToPath(import.meta.url);
 const ROOT = resolve(dirname(SELF), "..");
-const EVAL_VERSION = "1.0.0";
+const EVAL_VERSION = "1.1.0";
 const CARD_SCHEMA = "date-calculator-tool/safety-eval-system-card";
 const CARD_SCHEMA_VERSION = "1.0.0";
 const APP_NAME = "Date Calculator Tool";
-const APP_VERSION = "1.0.0";
+// The app and the date-core engine are versioned separately since v1.1.0
+// (plan A4): the app moves, the engine (and golden.json) stays put.
+const APP_VERSION = "1.1.0";
+const ENGINE_VERSION = "1.0.0";
 const DEFAULT_SEED = 20261116;
 const DEFAULT_CASES = 4000;
 const DEFAULT_UI_CASES = 180;
@@ -75,7 +89,7 @@ const MAX_DETAILS = 8;
 const Z_95 = 1.959963984540054;
 const MAX_STRING_BYTES = 1024;
 const MAX_REQUEST_BYTES = 65536;
-const BEGIN_MARKER = "/* date-core:begin v1.0.0 */";
+const BEGIN_MARKER = `/* date-core:begin v${ENGINE_VERSION} */`;
 const END_MARKER = "/* date-core:end */";
 const INVALID_REQUEST =
   '{"ok":"false","error":{"code":"invalid_request","field":null,"message":"Invalid request."}}';
@@ -1993,6 +2007,7 @@ class MockEvent {
     this.altKey = Boolean(init.altKey);
     this.clipboardData = init.clipboardData ?? null;
     this.storageArea = init.storageArea ?? null;
+    this.persisted = Boolean(init.persisted);
   }
   preventDefault() {
     if (this.cancelable) this.defaultPrevented = true;
@@ -2085,6 +2100,9 @@ class MockElement {
     this._listeners = new Map();
     this._value = null;
     this._checked = false;
+    // A native date/time input with a segment cleared reads "" and reports
+    // validity.badInput (Chromium/WebView2); tests set this flag directly.
+    this._badInput = false;
     this.classList = new MockClassList(this);
     this.selectionStart = null;
     this.selectionEnd = null;
@@ -2208,6 +2226,17 @@ class MockElement {
   set checked(v) {
     this._checked = Boolean(v);
   }
+  get tabIndex() {
+    const raw = this._attrs.get("tabindex");
+    if (raw !== undefined && /^-?\d+$/.test(raw.trim())) return Number(raw.trim());
+    return ["BUTTON", "INPUT", "SELECT", "TEXTAREA", "A"].includes(this.tagName) ? 0 : -1;
+  }
+  set tabIndex(v) {
+    this._attrs.set("tabindex", String(Math.trunc(Number(v) || 0)));
+  }
+  get validity() {
+    return { badInput: this._badInput, valid: !this._badInput };
+  }
   get offsetWidth() {
     return 0;
   }
@@ -2227,6 +2256,7 @@ class MockElement {
   }
   set value(v) {
     const s = String(v ?? "");
+    this._badInput = false;
     if (this.tagName === "SELECT") {
       this._value = this.querySelectorAll("option").some((o) => o.value === s) ? s : "";
       return;
@@ -2373,11 +2403,27 @@ class MockElement {
     return !ev.defaultPrevented;
   }
 
+  // Like a browser: a disabled control cannot take focus, and moving focus
+  // fires blur/focusout on the old element and focus/focusin on the new one.
   focus() {
-    if (this.ownerDocument) this.ownerDocument.activeElement = this;
+    const doc = this.ownerDocument;
+    if (!doc || this.disabled) return;
+    const prev = doc.activeElement;
+    if (prev === this) return;
+    if (prev && prev !== doc.body && prev.nodeType === 1) {
+      prev.dispatchEvent(new MockEvent("blur", { bubbles: false }));
+      prev.dispatchEvent(new MockEvent("focusout", { bubbles: true }));
+    }
+    doc.activeElement = this;
+    this.dispatchEvent(new MockEvent("focus", { bubbles: false }));
+    this.dispatchEvent(new MockEvent("focusin", { bubbles: true }));
   }
   blur() {
-    if (this.ownerDocument && this.ownerDocument.activeElement === this) this.ownerDocument.activeElement = this.ownerDocument.body;
+    const doc = this.ownerDocument;
+    if (!doc || doc.activeElement !== this) return;
+    doc.activeElement = doc.body;
+    this.dispatchEvent(new MockEvent("blur", { bubbles: false }));
+    this.dispatchEvent(new MockEvent("focusout", { bubbles: true }));
   }
   select() {
     this.focus();
@@ -2391,11 +2437,32 @@ class MockElement {
     return { top: 0, left: 0, width: 0, height: 0, right: 0, bottom: 0 };
   }
 
-  click() {
+  click(init = {}) {
     if (this.disabled) return;
-    const isCheck = this.tagName === "INPUT" && (this.type === "checkbox" || this.type === "radio");
+    if (this.tagName === "INPUT" && this.type === "radio") {
+      // A radio click checks it and unchecks its group; an already checked
+      // radio fires no input/change.
+      const was = this._checked;
+      const name = this.getAttribute("name");
+      const group = name && this.ownerDocument ? this.ownerDocument.querySelectorAll("input").filter((r) => r !== this && r.type === "radio" && r.getAttribute("name") === name) : [];
+      const before = group.map((r) => r._checked);
+      this._checked = true;
+      group.forEach((r) => (r._checked = false));
+      const ok = this.dispatchEvent(new MockEvent("click", { bubbles: true, cancelable: true, ...init }));
+      if (!ok) {
+        this._checked = was;
+        group.forEach((r, i) => (r._checked = before[i]));
+        return;
+      }
+      if (!was) {
+        this.dispatchEvent(new MockEvent("input", { bubbles: true }));
+        this.dispatchEvent(new MockEvent("change", { bubbles: true }));
+      }
+      return;
+    }
+    const isCheck = this.tagName === "INPUT" && this.type === "checkbox";
     if (isCheck) this._checked = !this._checked;
-    const ev = new MockEvent("click", { bubbles: true, cancelable: true });
+    const ev = new MockEvent("click", { bubbles: true, cancelable: true, ...init });
     const notCancelled = this.dispatchEvent(ev);
     if (isCheck) {
       if (!notCancelled) {
@@ -2723,6 +2790,20 @@ class MemoryStorage {
   constructor(initial = {}) {
     this._map = new Map(Object.entries(initial).map(([k, v]) => [String(k), String(v)]));
     this.writes = 0;
+    // Every mutation the page makes, in order ({op, key}); clear() counted
+    // separately (the page must never call it).
+    this.log = [];
+    this.clears = 0;
+    // Keys whose setItem throws, like a full quota.
+    this.refuse = new Set();
+  }
+  // Another tab's write: changes the shared area without counting as ours.
+  external(k, v) {
+    if (v === null) this._map.delete(String(k));
+    else this._map.set(String(k), String(v));
+  }
+  writesTo(k) {
+    return this.log.filter((e) => e.key === k).length;
   }
   get length() {
     return this._map.size;
@@ -2734,13 +2815,17 @@ class MemoryStorage {
     return this._map.has(String(k)) ? this._map.get(String(k)) : null;
   }
   setItem(k, v) {
+    if (this.refuse.has(String(k))) throw new Error("QuotaExceededError: the quota has been exceeded");
     this.writes++;
+    this.log.push({ op: "set", key: String(k) });
     this._map.set(String(k), String(v));
   }
   removeItem(k) {
+    this.log.push({ op: "remove", key: String(k) });
     this._map.delete(String(k));
   }
   clear() {
+    this.clears++;
     this._map.clear();
   }
   snapshot() {
@@ -2868,9 +2953,20 @@ function releaseJson(tag, url) {
   return JSON.stringify({ tag_name: tag, draft: false, prerelease: false, html_url: url, published_at: "2026-11-01T00:00:00Z" });
 }
 
+// Page visibility as a browser reports it; fires visibilitychange.
+function setPageVisible(sb, visible) {
+  sb.doc.visibilityState = visible ? "visible" : "hidden";
+  sb.doc.hidden = !visible;
+  sb.doc.dispatchEvent(new MockEvent("visibilitychange", { bubbles: false }));
+}
+
 async function createMobileSandbox(art, opts = {}) {
   const timers = new VirtualTimers(opts.startMs);
   const doc = instantiate(art.mobileTemplate);
+  if (opts.hidden) {
+    doc.visibilityState = "hidden";
+    doc.hidden = true;
+  }
   const errors = [];
   const storage = new MemoryStorage(opts.storage || {});
   const fetchCalls = [];
@@ -2977,15 +3073,72 @@ const HISTORY_INPUT_KEYS = {
   info: ["date"],
   countdown: ["targetDate", "targetTime"]
 };
+// v1.1.0 adds the history read-only commands (plan A3) and the countdown
+// store (plan A2).
+const NEW_COMMANDS_V110 = ["history_state", "history_retry", "history_reset", "countdown_load", "countdown_save", "countdown_clear"];
 const DESKTOP_COMMANDS = new Set([...ENGINE_OPS, "history_list", "history_add", "history_delete", "history_clear",
   "get_settings", "set_settings", "check_for_updates", "open_release_page", "copy_text", "get_app_info",
-  "is_smoke_test", "report_smoke_result"]);
+  "is_smoke_test", "report_smoke_result", ...NEW_COMMANDS_V110]);
+
+// commands.rs CountdownState + validate_countdown_state, for the stub:
+// exactly these keys (finishedSeenAtMs may be absent: serde Option), schema
+// 1, a real 0001..9999 date, a time of "" or exactly HH:MM, JS-safe u64s.
+const CD_STATE_KEYS = ["schemaVersion", "targetDate", "targetTime", "savedAtMs", "finishedSeenAtMs"];
+const CD_TIME_RE = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
+const COUNTDOWN_MAX_BYTES = 1024;
+const HISTORY_MAX_BYTES = 1024 * 1024;
+const isU64 = (v) => Number.isSafeInteger(v) && v >= 0;
+function strictCountdownState(v) {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return null;
+  if (!Object.keys(v).every((k) => CD_STATE_KEYS.includes(k))) return null;
+  if (!CD_STATE_KEYS.slice(0, 4).every((k) => Object.hasOwn(v, k))) return null;
+  const finished = Object.hasOwn(v, "finishedSeenAtMs") ? v.finishedSeenAtMs : null;
+  if (!isU64(v.schemaVersion) || v.schemaVersion !== 1) return null;
+  if (typeof v.targetDate !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(v.targetDate) || sanitizeDateValue(v.targetDate) !== v.targetDate) return null;
+  if (typeof v.targetTime !== "string" || !(v.targetTime === "" || CD_TIME_RE.test(v.targetTime))) return null;
+  if (!isU64(v.savedAtMs) || !(finished === null || isU64(finished))) return null;
+  return { schemaVersion: 1, targetDate: v.targetDate, targetTime: v.targetTime, savedAtMs: v.savedAtMs, finishedSeenAtMs: finished };
+}
+// commands.rs declares_newer_schema: an object whose schemaVersion is an
+// integer above `current`.
+function declaresNewer(value, current) {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value) && Number.isSafeInteger(value.schemaVersion) && value.schemaVersion > current;
+}
+// commands.rs load_countdown_from_path over the stub disk (after the cap).
+function parseCountdownFile(raw) {
+  let value;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    return { state: null, status: "corrupt" };
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { state: null, status: "corrupt" };
+  if (declaresNewer(value, 1)) return { state: null, status: "newer" };
+  const state = strictCountdownState(value);
+  return state ? { state, status: "ok" } : { state: null, status: "corrupt" };
+}
 
 async function createDesktopBackend(bridge, timers, opts = {}) {
   const defaultCalendar = (await bridge.result("validate_calendar", { calendar: {} })).calendar;
   let settings = { checkUpdatesOnStartup: true, firstDayOfWeek: "monday", calendar: defaultCalendar, schemaVersion: 1 };
   let history = [];
   let nextId = 1;
+  // The app data directory as files (raw text or null). Smoke mode never
+  // touches it: history and the countdown live in memory, as in commands.rs.
+  const seed = opts.disk || {};
+  const disk = {
+    history: seed.history ?? null,
+    historyBak: seed.historyBak ?? null,
+    historyReadError: Boolean(seed.historyReadError),
+    countdown: seed.countdown ?? null,
+    countdownBak: seed.countdownBak ?? null,
+    countdownUnreadable: Boolean(seed.countdownUnreadable),
+    // Files renamed aside to a fresh `<name>.bak-<ms>` (commands.rs move_aside).
+    historyExtraBaks: [...(seed.historyExtraBaks ?? [])],
+    countdownExtraBaks: [...(seed.countdownExtraBaks ?? [])]
+  };
+  let historyReadOnly = null; // null | "read_error" | "too_large" | "corrupt" | "newer_schema"
+  let countdownMemory = null; // smoke mode only
   const state = {
     calls: [],
     unknown: [],
@@ -2996,12 +3149,75 @@ async function createDesktopBackend(bridge, timers, opts = {}) {
     failSetSettings: 0,
     holds: [],
     held: [],
-    smokeDone: null
+    smokeDone: null,
+    countdownWrites: 0,
+    countdownLog: [],
+    failCountdownSave: 0,
+    historyWrites: 0
   };
   let smokeResolve;
   state.smokeDone = new Promise((r) => (smokeResolve = r));
   const clone = (v) => JSON.parse(JSON.stringify(v));
   const line = (s) => typeof s === "string" && s.trim() !== "" && Buffer.byteLength(s) <= 256 && !/[\u0000-\u001f\u007f-\u009f]/.test(s);
+  const storedEntryOk = (e) => Boolean(e) && typeof e === "object" && !Array.isArray(e) &&
+    Object.keys(e).sort().join() === "calculator,calculatorLabel,copyText,id,inputs,inputsText,resultText,timestampMs" &&
+    isU64(e.id) && isU64(e.timestampMs) && Object.hasOwn(HISTORY_INPUT_KEYS, e.calculator) && line(e.calculatorLabel) &&
+    line(e.inputsText) && line(e.resultText) && typeof e.copyText === "string" && Buffer.byteLength(e.copyText) <= 1024 &&
+    Boolean(e.inputs) && typeof e.inputs === "object" && Object.keys(e.inputs).sort().join() === HISTORY_INPUT_KEYS[e.calculator].slice().sort().join() &&
+    HISTORY_INPUT_KEYS[e.calculator].every((k) => typeof e.inputs[k] === "string" && Buffer.byteLength(e.inputs[k]) <= 256);
+  // commands.rs load_history_from_path (plan A3) over the stub disk.
+  function loadHistoryDisk() {
+    if (disk.historyReadError) return { entries: [], readOnly: "read_error" };
+    if (disk.history === null) return { entries: [], readOnly: null };
+    if (Buffer.byteLength(disk.history) > HISTORY_MAX_BYTES) return { entries: [], readOnly: "too_large" };
+    const corrupt = (entries) => {
+      if (disk.historyBak === null) disk.historyBak = disk.history;
+      return { entries, readOnly: "corrupt" };
+    };
+    let value;
+    try {
+      value = JSON.parse(disk.history);
+    } catch {
+      return corrupt([]);
+    }
+    if (declaresNewer(value, 1)) return { entries: [], readOnly: "newer_schema" };
+    if (!Array.isArray(value)) return corrupt([]);
+    const entries = value.filter(storedEntryOk).slice(0, 500);
+    return entries.length === value.length ? { entries: clone(entries), readOnly: null } : corrupt(clone(entries));
+  }
+  function applyHistoryLoad(load) {
+    history = load.entries;
+    historyReadOnly = load.readOnly;
+    // Ids never go backwards.
+    nextId = Math.max(nextId, history.reduce((m, e) => Math.max(m, e.id + 1), 1));
+  }
+  function persistHistory() {
+    if (opts.smoke) return;
+    state.historyWrites++;
+    disk.history = JSON.stringify(history);
+  }
+  const historyStatus = () => ({ readOnly: historyReadOnly !== null, reason: historyReadOnly });
+  const refuseReadOnly = () => {
+    if (historyReadOnly !== null) throw "history_read_only";
+  };
+  const countdownTextIsNewer = (text) => {
+    try {
+      return declaresNewer(JSON.parse(text), 1);
+    } catch {
+      return false;
+    }
+  };
+  // commands.rs countdown_slot_replaceable: save and clear only replace a
+  // missing file or a readable v1 record (valid or corrupt).
+  const refuseCountdownSlot = () => {
+    if (disk.countdown === null) return;
+    if (disk.countdownUnreadable) throw "countdown_unreadable";
+    if (Buffer.byteLength(disk.countdown) > COUNTDOWN_MAX_BYTES) {
+      throw Buffer.byteLength(disk.countdown) <= 64 * 1024 && countdownTextIsNewer(disk.countdown) ? "countdown_newer_schema" : "countdown_unreadable";
+    }
+    if (countdownTextIsNewer(disk.countdown)) throw "countdown_newer_schema";
+  };
+  if (!opts.smoke) applyHistoryLoad(loadHistoryDisk());
   async function dispatch(cmd, args = {}) {
     if (ENGINE_OPS.includes(cmd)) {
       state.bridgeCalls++;
@@ -3017,7 +3233,7 @@ async function createDesktopBackend(bridge, timers, opts = {}) {
         return {
           name: APP_NAME,
           version: APP_VERSION,
-          engineVersion: "1.0.0",
+          engineVersion: ENGINE_VERSION,
           tagline: "offline · local · clean",
           creators: ["Mohamed Sayed", "Ahmed Emara"],
           aiBuilders: ["Claude (Anthropic)"],
@@ -3052,6 +3268,79 @@ async function createDesktopBackend(bridge, timers, opts = {}) {
       }
       case "history_list":
         return clone(history);
+      case "history_state":
+        return historyStatus();
+      case "history_retry":
+        if (!opts.smoke) applyHistoryLoad(loadHistoryDisk());
+        return historyStatus();
+      case "history_reset":
+        if (historyReadOnly === null) throw "history_not_read_only";
+        if (!opts.smoke) {
+          // commands.rs history_reset_with_path: the current bytes are kept
+          // unless .bak already holds the same bytes; renamed to .bak when
+          // free, else to a fresh .bak-<ms>. A file that cannot be read
+          // (locked) cannot be renamed either, so read-only stays.
+          if (disk.historyReadError) throw "failed to keep the old history: the file is in use";
+          if (disk.history !== null && disk.history !== disk.historyBak) {
+            if (disk.historyBak === null) disk.historyBak = disk.history;
+            else disk.historyExtraBaks.push(disk.history);
+          }
+          disk.history = "[]";
+          state.historyWrites++;
+        }
+        history = [];
+        historyReadOnly = null;
+        return null;
+      case "countdown_load": {
+        if (opts.smoke) return countdownMemory ? { state: clone(countdownMemory), status: "ok" } : { state: null, status: "empty" };
+        if (disk.countdownUnreadable) return { state: null, status: "unreadable" };
+        if (disk.countdown === null) return { state: null, status: "empty" };
+        if (Buffer.byteLength(disk.countdown) > COUNTDOWN_MAX_BYTES) {
+          // commands.rs load_oversize_countdown: a newer record is left
+          // alone; anything else is renamed aside whole (never copied).
+          if (Buffer.byteLength(disk.countdown) <= 64 * 1024 && countdownTextIsNewer(disk.countdown)) return { state: null, status: "newer" };
+          if (disk.countdownBak === null) disk.countdownBak = disk.countdown;
+          else disk.countdownExtraBaks.push(disk.countdown);
+          disk.countdown = null;
+          return { state: null, status: "corrupt" };
+        }
+        const load = parseCountdownFile(disk.countdown);
+        if (load.status === "corrupt" && disk.countdownBak === null) disk.countdownBak = disk.countdown;
+        return load;
+      }
+      case "countdown_save": {
+        // Tauri deserializes `state` strictly, then validate_countdown_state.
+        const st = strictCountdownState(args?.state);
+        if (!st) throw "invalid args `state` for command `countdown_save`";
+        const text = JSON.stringify(st);
+        if (Buffer.byteLength(text) > COUNTDOWN_MAX_BYTES) throw "serialized countdown exceeds max allowed file size";
+        state.countdownLog.push({ op: "save", state: clone(st), at: timers.now });
+        if (opts.smoke) {
+          countdownMemory = st;
+          return null;
+        }
+        if (state.failCountdownSave > 0) {
+          state.failCountdownSave--;
+          throw "failed to commit file: injected failure";
+        }
+        refuseCountdownSlot();
+        disk.countdown = text;
+        disk.countdownUnreadable = false;
+        state.countdownWrites++;
+        return null;
+      }
+      case "countdown_clear":
+        state.countdownLog.push({ op: "clear", at: timers.now });
+        if (opts.smoke) {
+          countdownMemory = null;
+          return null;
+        }
+        // A newer-schema, over-cap or unreadable record is refused and left
+        // in place; the .bak is never touched.
+        refuseCountdownSlot();
+        if (disk.countdown !== null) state.countdownWrites++;
+        disk.countdown = null;
+        return null;
       case "history_add": {
         const e = args?.entry;
         const keys = e && HISTORY_INPUT_KEYS[e.calculator];
@@ -3061,21 +3350,32 @@ async function createDesktopBackend(bridge, timers, opts = {}) {
           !keys.every((k) => typeof e.inputs[k] === "string" && Buffer.byteLength(e.inputs[k]) <= 256)) {
           throw "invalid history entry";
         }
+        refuseReadOnly();
         const first = history[0];
         if (first && first.calculator === e.calculator && canonical(first.inputs) === canonical(e.inputs) && first.resultText === e.resultText) {
           first.timestampMs = timers.now;
+          persistHistory();
           return clone(history);
         }
         history.unshift({ id: nextId++, timestampMs: timers.now, calculator: e.calculator, calculatorLabel: e.calculatorLabel,
           inputs: clone(e.inputs), inputsText: e.inputsText, resultText: e.resultText, copyText: e.copyText });
         history = history.slice(0, 500);
+        persistHistory();
         return clone(history);
       }
-      case "history_delete":
-        history = history.filter((h) => h.id !== args?.id);
+      case "history_delete": {
+        refuseReadOnly();
+        const next = history.filter((h) => h.id !== args?.id);
+        if (next.length !== history.length) {
+          history = next;
+          persistHistory();
+        }
         return clone(history);
+      }
       case "history_clear":
+        refuseReadOnly();
         history = [];
+        persistHistory();
         return [];
       case "check_for_updates":
         return { ok: true, updateAvailable: false, currentVersion: APP_VERSION, latestVersion: APP_VERSION,
@@ -3100,6 +3400,7 @@ async function createDesktopBackend(bridge, timers, opts = {}) {
   }
   return {
     state,
+    disk,
     getHistory: () => clone(history),
     getSettings: () => clone(settings),
     // Holds the next call matching `pred` until release() (IPC race tests).
@@ -3127,6 +3428,10 @@ async function createDesktopBackend(bridge, timers, opts = {}) {
 async function createDesktopSandbox(art, bridge, opts = {}) {
   const timers = new VirtualTimers(opts.startMs);
   const doc = instantiate(art.desktopTemplate);
+  if (opts.hidden) {
+    doc.visibilityState = "hidden";
+    doc.hidden = true;
+  }
   const errors = [];
   const backend = await createDesktopBackend(bridge, timers, opts);
   let inFlight = 0;
@@ -3629,7 +3934,7 @@ async function runClockSuite(slice, make, ctx) {
     });
   }
 
-  const roll = slice.criterion("midnight-rollover", "at 2026-12-31 23:59:57 the countdown to 2027-01-01 runs 3, 2, 1, now, then 1 s past (is-past), and on the 00:00 tick the date info relative text, the age hint and the empty-as-of age switch to the new day");
+  const roll = slice.criterion("midnight-rollover", "at 2026-12-31 23:59:57 the countdown to 2027-01-01 runs 3, 2, 1, now, then 1 s past (is-past), with the status and the finished chip from 00:00:00 on (v1.1.0 wording), and on the 00:00 tick the date info relative text, the age hint and the empty-as-of age switch to the new day");
   await guard(roll, "rollover", async () => {
     const sb = await make(T_NEW_YEAR);
     const u = uiDriver(sb);
@@ -3640,11 +3945,17 @@ async function runClockSuite(slice, make, ctx) {
     roll.check(u.text("infoResult").includes(before.relativeText) && u.text("ageAsOfHint") === "empty = today (2026-12-31)", () => `before: ${before.relativeText} / ${u.text("ageAsOfHint")}`);
     roll.check(u.text("cdClock") === "0d 00h 00m 03s" && u.text("cdStatus").startsWith("Counting down"), () => `start ${u.text("cdClock")} / ${u.text("cdStatus")}`);
     await sb.advance(50);
-    const want = [["0d 00h 00m 02s", "Counting down"], ["0d 00h 00m 01s", "Counting down"], ["0d 00h 00m 00s", "The target time is now"], ["0d 00h 00m 01s", "Target passed"], ["0d 00h 00m 02s", "Target passed"]];
+    // v1.1.0 (plan A2): `now` is already the finished signal, so the status
+    // and the phase chip switch at 00:00:00, not one second later.
+    const fin = "Finished: 2027-01-01 00:00:00 (Friday) has passed. Counting the time since.";
+    const want = [["0d 00h 00m 02s", "Counting down to 2027-01-01 00:00:00", "counting down"], ["0d 00h 00m 01s", "Counting down to", "counting down"],
+      ["0d 00h 00m 00s", fin, "finished"], ["0d 00h 00m 01s", fin, "finished"], ["0d 00h 00m 02s", fin, "finished"]];
     for (let k = 0; k < want.length; k++) {
       await sb.advance(1000);
-      roll.check(u.text("cdClock") === want[k][0] && u.text("cdStatus").startsWith(want[k][1]), () => `step ${k + 1}: "${u.text("cdClock")}" / "${u.text("cdStatus")}"`);
+      roll.check(u.text("cdClock") === want[k][0] && u.text("cdStatus").startsWith(want[k][1]) && u.text("cdPhase") === want[k][2],
+        () => `step ${k + 1}: "${u.text("cdClock")}" / "${u.text("cdStatus")}" / chip "${u.text("cdPhase")}"`);
     }
+    roll.check(u.must("cdPhase").classList.contains("is-finished"), "finished chip lacks is-finished");
     roll.check(u.must("cdClock").classList.contains("is-past"), "past clock lacks is-past");
     const after = await bridge.result("calc_date_info", { date: "2027-01-01", today: "2027-01-01" });
     roll.check(after.relativeText === "Today" && u.text("infoResult").includes("Today") && !u.text("infoResult").includes(before.relativeText), () => `info after midnight: ${excerpt(u.text("infoResult"), 200)}`);
@@ -3653,6 +3964,797 @@ async function runClockSuite(slice, make, ctx) {
     roll.check(u.text("ageLiveResult") === `→ ${age.ageText}` && age.ageText === "27 years", () => `age after midnight ${u.text("ageLiveResult")}`);
     roll.check(sb.errors.length === 0 && sb.doc._errors.length === 0, () => `errors: ${sb.errors.join(" | ")}`);
   });
+}
+
+// ============================================================================
+// 12b. v1.1.0 behaviour (plan A6), shared by slices B and C
+// ============================================================================
+//
+// Each probe drives fresh sandboxes from `make(startMs, extra)` and reports
+// through `c.check`. Slices B and C run them on the real pages as criteria;
+// slice D runs the same probes on planted mutants of the pages, where at
+// least one check must fail (a probe that cannot see its mutant is vacuous).
+
+const COUNTDOWN_KEY = "date_tool_countdown_v1";
+// The shared wording (ui/main.js and mobile/index.html UI_TEXT, contract).
+const CD_TEXT = {
+  counting: (when) => `Counting down to ${when}.`,
+  restored: (left, when) => `Countdown restored: ${left} left until ${when}.`,
+  finished: (when) => `Finished: ${when} has passed. Counting the time since.`,
+  finishedClosed: (when) => `Finished while the app was closed: ${when}. Counting the time since.`,
+  chipCounting: "counting down",
+  chipRestored: "restored",
+  chipFinished: "finished",
+  chipFinishedClosed: "finished while closed",
+  saved: "Saved on this device. It resumes when you reopen the app.",
+  forget: "Forget",
+  newer: "Saved countdown is from a newer version.",
+  unreadable: "The saved countdown could not be read, so it is left untouched.",
+  writeFailed: "The countdown could not be saved on this device."
+};
+const CAL_TEXT = { start: ", start", end: ", end", selected: ", selected", hintStart: "Next click sets the start date.", hintEnd: "Next click sets the end date." };
+const HISTORY_TEXT = {
+  banner: "History could not be read safely. Nothing will be overwritten.",
+  read_error: "The history file could not be read. Another program may be using it.",
+  too_large: "The history file is larger than the size limit.",
+  corrupt: "The history file is damaged or has entries that cannot be read.",
+  newer_schema: "The history file is from a newer version of the app.",
+  resetFailed: "A new history could not be started. Try again."
+};
+const GOOD_ENTRY = { id: 7, timestampMs: 1, calculator: "info", calculatorLabel: "Date Info", inputs: { date: "2024-01-01" }, inputsText: "2024-01-01", resultText: "Monday, January 1, 2024", copyText: "Monday, January 1, 2024" };
+
+// Reports into a list instead of a criterion (mutant runs).
+class Collector {
+  constructor() {
+    this.problems = [];
+  }
+  check(ok, detail) {
+    if (!ok) this.problems.push(typeof detail === "function" ? detail() : String(detail ?? "failed"));
+    return Boolean(ok);
+  }
+  fail(detail) {
+    return this.check(false, detail);
+  }
+  note() {}
+}
+
+// The per-surface store: localStorage keys on mobile, files on desktop.
+function cdRaw(sb) {
+  return sb.surface === "mobile" ? sb.storage.getItem(COUNTDOWN_KEY) : sb.backend.disk.countdown;
+}
+function cdBak(sb) {
+  return sb.surface === "mobile" ? sb.storage.getItem(`${COUNTDOWN_KEY}_bak`) : sb.backend.disk.countdownBak;
+}
+function cdRecord(sb) {
+  const raw = cdRaw(sb);
+  if (raw === null) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return undefined;
+  }
+}
+function cdWrites(sb) {
+  return sb.surface === "mobile" ? sb.storage.writesTo(COUNTDOWN_KEY) : sb.backend.state.countdownWrites;
+}
+function historyRaw(sb) {
+  return sb.surface === "mobile" ? sb.storage.getItem(HISTORY_KEY) : sb.backend.disk.history;
+}
+function historyBak(sb) {
+  return sb.surface === "mobile" ? sb.storage.getItem(`${HISTORY_KEY}_bak`) : sb.backend.disk.historyBak;
+}
+// Values kept under a fresh backup name (desktop `<name>.bak-<ms>`, mobile
+// `<key>_bak_<ms>`) because `.bak` already held something else.
+function historyExtraBaks(sb) {
+  if (sb.surface !== "mobile") return [...sb.backend.disk.historyExtraBaks];
+  const snap = sb.storage.snapshot();
+  return Object.keys(snap).filter((k) => k.startsWith(`${HISTORY_KEY}_bak_`)).map((k) => snap[k]);
+}
+function countdownExtraBaks(sb) {
+  if (sb.surface !== "mobile") return [...sb.backend.disk.countdownExtraBaks];
+  const snap = sb.storage.snapshot();
+  return Object.keys(snap).filter((k) => k.startsWith(`${COUNTDOWN_KEY}_bak_`)).map((k) => snap[k]);
+}
+function setHistoryRaw(sb, raw) {
+  if (sb.surface === "mobile") sb.storage.external(HISTORY_KEY, raw);
+  else sb.backend.disk.history = raw;
+}
+function historyAddCalls(sb) {
+  return sb.surface === "mobile" ? sb.storage.writesTo(HISTORY_KEY) : sb.backend.state.calls.filter((x) => x === "history_add").length;
+}
+// What survives a close and reopen.
+function persisted(sb) {
+  return sb.surface === "mobile" ? { storage: sb.storage.snapshot() } : { disk: { ...sb.backend.disk } };
+}
+function seedStore(surface, { countdown, countdownBak, countdownUnreadable, history, historyBak, historyReadError } = {}) {
+  if (surface === "mobile") {
+    const storage = {};
+    if (countdown !== undefined) storage[COUNTDOWN_KEY] = countdown;
+    if (countdownBak !== undefined) storage[`${COUNTDOWN_KEY}_bak`] = countdownBak;
+    if (history !== undefined) storage[HISTORY_KEY] = history;
+    if (historyBak !== undefined) storage[`${HISTORY_KEY}_bak`] = historyBak;
+    return { storage };
+  }
+  return { disk: { countdown, countdownBak, countdownUnreadable, history, historyBak, historyReadError } };
+}
+
+function cellOf(sb, gridId, iso) {
+  const g = sb.doc.getElementById(gridId);
+  return g ? g.children.find((c) => c.dataset.date === iso) || null : null;
+}
+function tabStops(sb, gridId) {
+  const g = sb.doc.getElementById(gridId);
+  return g ? g.children.filter((c) => c.getAttribute("tabindex") === "0") : [];
+}
+async function pressKey(sb, el, key, shiftKey = false) {
+  const ev = new MockEvent("keydown", { key, shiftKey, bubbles: true, cancelable: true });
+  el.dispatchEvent(ev);
+  await sb.drain();
+  return ev;
+}
+function clearSegment(el) {
+  el.value = "";
+  el._badInput = true;
+  el.dispatchEvent(new MockEvent("input", { bubbles: true }));
+  el.dispatchEvent(new MockEvent("change", { bubbles: true }));
+}
+async function closePage(sb) {
+  sb.win.dispatchEvent(new MockEvent("pagehide"));
+  setPageVisible(sb, false);
+  await sb.drain();
+}
+async function cdExpect(ctx, nowMs, date, time) {
+  const now = localMoment(Math.floor(nowMs / 1000) * 1000);
+  return ctx.bridge.result("calc_countdown", { now, target: { date, time, utcOffsetMinutes: offsetAtLocal(date, time, nowMs) } });
+}
+const whenText = (r) => `${r.targetDate} ${r.targetTime} (${r.targetWeekday})`;
+function cleanRun(c, sb, label) {
+  c.check(sb.errors.length === 0 && sb.doc._errors.length === 0, () => `${label}: errors ${excerpt([...sb.errors, ...sb.doc._errors].join(" | "), 400)}`);
+  c.check(sb.doc._violations.length === 0, () => `${label}: DOM violations ${sb.doc._violations.join(" | ")}`);
+  if (sb.surface === "mobile") c.check(sb.storage.clears === 0, `${label}: localStorage.clear() was called`);
+}
+
+// --- A1 calendars ------------------------------------------------------------
+
+async function probeCalendarClickInfo({ make, ctx }, c) {
+  const sb = await make(T_MAIN);
+  const u = uiDriver(sb);
+  const today = localIso(sb.timers.now);
+  for (const g of ["bizCalGrid", "infoCalGrid", "cdCalGrid"]) {
+    const cells = u.must(g).children;
+    c.check(cells.length === 42 && cells.every((x) => x.tagName === "BUTTON" && x.type === "button"), () => `${g}: not 42 <button type=button> cells (${cells.length}, ${cells[0]?.tagName})`);
+    c.check(tabStops(sb, g).length === 1, () => `${g}: ${tabStops(sb, g).length} tab stops at boot`);
+    c.check(cells.every((x) => !x.hasAttribute("role") && (x.getAttribute("aria-label") || "").length > 0), () => `${g}: a cell lacks an aria-label or keeps role=img`);
+  }
+  c.check(cellOf(sb, "infoCalGrid", today)?.getAttribute("aria-current") === "date" && tabStops(sb, "infoCalGrid")[0]?.dataset.date === today, "today is not marked or not the tab stop");
+  const writesBefore = historyAddCalls(sb);
+  const hist = savedHistory(sb).length;
+  const target = cellOf(sb, "infoCalGrid", "2026-11-20");
+  if (!c.check(Boolean(target), "no 2026-11-20 cell in the Date Info calendar")) return;
+  await u.clickEl(target);
+  const r = await ctx.bridge.result("calc_date_info", { date: "2026-11-20", today });
+  c.check(u.must("infoDate").value === "2026-11-20", () => `click set infoDate=${u.must("infoDate").value}`);
+  c.check(u.text("infoLiveResult") === `→ ${r.weekday} · ${r.isoWeekText}`, () => `info live after click "${u.text("infoLiveResult")}"`);
+  const sel = cellOf(sb, "infoCalGrid", "2026-11-20");
+  c.check(sel?.classList.contains("selected") && sel.getAttribute("aria-pressed") === "true" && (sel.getAttribute("aria-label") || "").endsWith(CAL_TEXT.selected),
+    () => `selected cell marks: ${sel?.className} / ${sel?.getAttribute("aria-label")}`);
+  c.check(u.must("infoCalGrid").children.filter((x) => x.classList.contains("selected")).length === 1, "more than one selected cell");
+  const out = cellOf(sb, "infoCalGrid", "2026-12-03");
+  c.check(Boolean(out) && out.classList.contains("out") && !out.disabled, "2026-12-03 is not a clickable out-of-month cell");
+  if (out) await u.clickEl(out);
+  c.check(u.must("infoDate").value === "2026-12-03" && u.text("infoCalTitle") === "December 2026", () => `out-of-month click: ${u.must("infoDate").value} / ${u.text("infoCalTitle")}`);
+  await u.click("infoCalTodayBtn");
+  c.check(u.text("infoCalTitle") === "November 2026" && u.must("infoDate").value === "2026-12-03", () => `today button: ${u.text("infoCalTitle")} / ${u.must("infoDate").value}`);
+  c.check(historyAddCalls(sb) === writesBefore && savedHistory(sb).length === hist, "a calendar click wrote history");
+  cleanRun(c, sb, "calendar-click-info");
+}
+
+async function probeCalendarClickCountdown({ make, ctx }, c) {
+  const sb = await make(T_MAIN);
+  const u = uiDriver(sb);
+  await u.set("cdTime", "09:30");
+  c.check(cdWrites(sb) === 0, "a time without a date was saved");
+  const hist = historyAddCalls(sb);
+  await u.clickEl(cellOf(sb, "cdCalGrid", "2026-11-25"));
+  let rec = cdRecord(sb);
+  c.check(u.must("cdTarget").value === "2026-11-25" && u.must("cdTime").value === "09:30", () => `click set ${u.must("cdTarget").value} ${u.must("cdTime").value}`);
+  c.check(canonical(rec) === canonical({ schemaVersion: 1, targetDate: "2026-11-25", targetTime: "09:30", savedAtMs: T_MAIN, finishedSeenAtMs: null }),
+    () => `saved record ${JSON.stringify(rec)}`);
+  let r = await cdExpect(ctx, sb.timers.now, "2026-11-25", "09:30");
+  c.check(u.text("cdClock") === r.clockText && u.text("cdPhase") === CD_TEXT.chipCounting && u.text("cdStatus") === CD_TEXT.counting(whenText(r)),
+    () => `after click: ${u.text("cdClock")} / ${u.text("cdPhase")} / ${u.text("cdStatus")}`);
+  c.check(!u.hidden("cdSavedNote") && u.text("cdSavedNoteText") === CD_TEXT.saved && !u.hidden("cdForgetBtn") && u.text("cdForgetBtn") === CD_TEXT.forget, "saved note not shown");
+  const sel = cellOf(sb, "cdCalGrid", "2026-11-25");
+  c.check(sel?.classList.contains("selected") && sel.getAttribute("aria-pressed") === "true", "countdown target cell not selected");
+  await u.clickEl(cellOf(sb, "cdCalGrid", "2026-11-10"));
+  rec = cdRecord(sb);
+  r = await cdExpect(ctx, sb.timers.now, "2026-11-10", "09:30");
+  c.check(u.text("cdPhase") === CD_TEXT.chipFinished && u.must("cdPhase").classList.contains("is-finished") && u.text("cdStatus") === CD_TEXT.finished(whenText(r)),
+    () => `past day: ${u.text("cdPhase")} / ${u.text("cdStatus")}`);
+  c.check(rec?.targetDate === "2026-11-10" && rec?.targetTime === "09:30" && rec?.finishedSeenAtMs === sb.timers.now, () => `past day record ${JSON.stringify(rec)}`);
+  c.check(historyAddCalls(sb) === hist, "a calendar click wrote history");
+  cleanRun(c, sb, "calendar-click-countdown");
+}
+
+async function probeBizRangePick({ make, ctx }, c) {
+  const sb = await make(T_MAIN);
+  const u = uiDriver(sb);
+  const pick = () => ({ start: u.must("bizPickStart").checked, end: u.must("bizPickEnd").checked, hint: u.text("bizCalHint") });
+  const isStart = (p) => p.start && !p.end && p.hint === CAL_TEXT.hintStart;
+  const isEnd = (p) => p.end && !p.start && p.hint === CAL_TEXT.hintEnd;
+  const live = async (s, e, inc) => {
+    const r = await ctx.bridge.result("calc_business_days", { startDate: s, endDate: e, includeEndDay: inc, calendar: ctx.defaultCalendar });
+    return `→ ${r.summaryText}`;
+  };
+  const hist = historyAddCalls(sb);
+  c.check(u.must("bizCalHint").getAttribute("role") === "status" && u.must("bizCalPick")?.tagName === "FIELDSET", "pick toggle markup");
+  c.check(isStart(pick()), () => `initial target ${JSON.stringify(pick())}`);
+  await u.clickEl(cellOf(sb, "bizCalGrid", "2026-11-03"));
+  c.check(u.must("bizStart").value === "2026-11-03" && u.must("bizEnd").value === "" && isEnd(pick()), () => `first click: ${u.must("bizStart").value} ${JSON.stringify(pick())}`);
+  await u.clickEl(cellOf(sb, "bizCalGrid", "2026-11-10"));
+  c.check(u.must("bizEnd").value === "2026-11-10" && isStart(pick()), () => `second click: ${u.must("bizEnd").value} ${JSON.stringify(pick())}`);
+  c.check(u.text("bizLiveResult") === (await live("2026-11-03", "2026-11-10", false)), () => `range live ${u.text("bizLiveResult")}`);
+  // Marks come from the field values: without "include end date" the engine
+  // range stops the day before, but the End mark stays on the End date.
+  const s = cellOf(sb, "bizCalGrid", "2026-11-03");
+  const e = cellOf(sb, "bizCalGrid", "2026-11-10");
+  const d9 = cellOf(sb, "bizCalGrid", "2026-11-09");
+  c.check(s?.classList.contains("pick-start") && (s.getAttribute("aria-label") || "").endsWith(CAL_TEXT.start) && s.getAttribute("aria-pressed") === "true", "start mark");
+  c.check(e?.classList.contains("pick-end") && (e.getAttribute("aria-label") || "").endsWith(CAL_TEXT.end) && e.getAttribute("aria-pressed") === "true" && !e.classList.contains("in-range"),
+    () => `end mark (includeEndDay=false): ${e?.className}`);
+  c.check(d9?.classList.contains("in-range") && !d9.classList.contains("pick-end") && !d9.hasAttribute("aria-pressed"), () => `day before end: ${d9?.className}`);
+  // The target is Start now; Shift+click still sets End.
+  cellOf(sb, "bizCalGrid", "2026-11-26").click({ shiftKey: true });
+  await sb.drain();
+  c.check(u.must("bizEnd").value === "2026-11-26" && u.must("bizStart").value === "2026-11-03" && isStart(pick()), () => `shift-click: ${u.must("bizStart").value}..${u.must("bizEnd").value} ${JSON.stringify(pick())}`);
+  await u.clickEl(cellOf(sb, "bizCalGrid", "2026-11-05"));
+  c.check(u.must("bizStart").value === "2026-11-05" && u.must("bizEnd").value === "2026-11-26" && isEnd(pick()), () => `third click (start again): ${u.must("bizStart").value} ${JSON.stringify(pick())}`);
+  u.must("bizEnd").focus();
+  await sb.drain();
+  c.check(isEnd(pick()), () => `focusing End: ${JSON.stringify(pick())}`);
+  u.must("bizStart").focus();
+  await sb.drain();
+  c.check(isStart(pick()), () => `focusing Start: ${JSON.stringify(pick())}`);
+  await u.click("bizPickEnd");
+  c.check(isEnd(pick()), () => `End radio: ${JSON.stringify(pick())}`);
+  await u.clickEl(cellOf(sb, "bizCalGrid", "2026-11-24"));
+  c.check(u.must("bizEnd").value === "2026-11-24" && u.must("bizStart").value === "2026-11-05" && isStart(pick()), "End radio then click");
+  await u.click("bizIncludeEnd");
+  const e24 = cellOf(sb, "bizCalGrid", "2026-11-24");
+  c.check(e24?.classList.contains("pick-end") && e24.classList.contains("in-range"), () => `includeEndDay=true end cell ${e24?.className}`);
+  c.check(u.text("bizLiveResult") === (await live("2026-11-05", "2026-11-24", true)), () => `inclusive live ${u.text("bizLiveResult")}`);
+  await u.click("bizIncludeEnd");
+  await u.set("bizStart", "2026-11-25");
+  await u.set("bizEnd", "2026-11-12");
+  const bs = cellOf(sb, "bizCalGrid", "2026-11-25");
+  const be = cellOf(sb, "bizCalGrid", "2026-11-12");
+  c.check(bs?.classList.contains("pick-start") && !bs.classList.contains("pick-end") && be?.classList.contains("pick-end") && !be.classList.contains("pick-start"),
+    () => `backward range marks: ${bs?.className} / ${be?.className}`);
+  c.check(u.text("bizLiveResult") === (await live("2026-11-25", "2026-11-12", false)), () => `backward live ${u.text("bizLiveResult")}`);
+  c.check(u.must("bizCalGrid").children.filter((x) => x.classList.contains("pick-start")).length === 1 &&
+    u.must("bizCalGrid").children.filter((x) => x.classList.contains("pick-end")).length === 1, "more than one start or end mark");
+  c.check(historyAddCalls(sb) === hist, "calendar picks wrote history");
+  cleanRun(c, sb, "biz-range-pick");
+}
+
+async function probeCalendarViewFollowsClick({ make }, c) {
+  const sb = await make(T_MAIN);
+  const u = uiDriver(sb);
+  await u.set("bizStart", "2026-11-03");
+  c.check(u.text("bizCalTitle") === "November 2026", () => `typed start view ${u.text("bizCalTitle")}`);
+  await u.click("bizPickEnd");
+  const out = cellOf(sb, "bizCalGrid", "2026-12-03");
+  c.check(Boolean(out) && out.classList.contains("out"), "2026-12-03 not shown as an out-of-month cell");
+  if (out) await u.clickEl(out);
+  // v1.0.0 anchoring (the earlier date) would stay on November.
+  c.check(u.must("bizEnd").value === "2026-12-03" && u.text("bizCalTitle") === "December 2026", () => `view after click: ${u.must("bizEnd").value} / ${u.text("bizCalTitle")}`);
+  await u.set("bizStart", "2026-11-04");
+  c.check(u.text("bizCalTitle") === "November 2026", () => `typed input keeps the earlier-date anchoring: ${u.text("bizCalTitle")}`);
+  await u.click("bizCalNextBtn");
+  c.check(u.text("bizCalTitle") === "December 2026", "next month button");
+  await u.click("bizCalTodayBtn");
+  c.check(u.text("bizCalTitle") === "November 2026" && u.must("bizStart").value === "2026-11-04" && u.must("bizEnd").value === "2026-12-03", "today button changed the fields or not the view");
+  await u.set("cdTarget", "2027-03-15");
+  c.check(u.text("cdCalTitle") === "March 2027", () => `countdown view ${u.text("cdCalTitle")}`);
+  await u.click("cdCalTodayBtn");
+  c.check(u.text("cdCalTitle") === "November 2026" && u.must("cdTarget").value === "2027-03-15", "countdown today button");
+  cleanRun(c, sb, "calendar-view-follows-click");
+}
+
+async function probeCalendarKeyboard({ make }, c) {
+  const sb = await make(T_MAIN);
+  const u = uiDriver(sb);
+  const g = "infoCalGrid";
+  const oneStop = (label) => {
+    for (const id of ["bizCalGrid", "infoCalGrid", "cdCalGrid"]) c.check(tabStops(sb, id).length === 1, () => `${label}: ${id} has ${tabStops(sb, id).length} tab stops`);
+    c.check(tabStops(sb, g)[0] === sb.doc.activeElement, () => `${label}: the tab stop is not the focused cell`);
+  };
+  const start = tabStops(sb, g)[0];
+  if (!c.check(start?.dataset.date === "2026-11-17", "Date Info tab stop is not today")) return;
+  start.focus();
+  await sb.drain();
+  const steps = [["ArrowRight", false, "2026-11-18", "November 2026"], ["ArrowDown", false, "2026-11-25", "November 2026"], ["ArrowUp", false, "2026-11-18", "November 2026"],
+    ["ArrowLeft", false, "2026-11-17", "November 2026"], ["Home", false, "2026-11-16", "November 2026"], ["End", false, "2026-11-22", "November 2026"],
+    ["PageDown", false, "2026-12-22", "December 2026"], ["PageUp", false, "2026-11-22", "November 2026"], ["PageDown", true, "2027-11-22", "November 2027"],
+    ["PageUp", true, "2026-11-22", "November 2026"]];
+  for (const [key, shift, want, title] of steps) {
+    const ev = await pressKey(sb, sb.doc.activeElement, key, shift);
+    const label = `${shift ? "Shift+" : ""}${key}`;
+    c.check(ev.defaultPrevented, `${label} not prevented`);
+    c.check(sb.doc.activeElement?.dataset?.date === want && u.text("infoCalTitle") === title, () => `${label}: focus ${sb.doc.activeElement?.dataset?.date} / ${u.text("infoCalTitle")}, want ${want} / ${title}`);
+    c.check(u.must("infoDate").value === "", () => `${label} selected ${u.must("infoDate").value}`);
+    oneStop(label);
+  }
+  await pressKey(sb, sb.doc.activeElement, "Enter");
+  c.check(u.must("infoDate").value === "2026-11-22" && sb.doc.activeElement?.dataset?.date === "2026-11-22" && sb.doc.activeElement.classList.contains("selected"),
+    () => `Enter: ${u.must("infoDate").value}, focus ${sb.doc.activeElement?.dataset?.date}`);
+  oneStop("Enter");
+  // Month ends clamp; Space selects.
+  await u.set("infoDate", "2027-01-31");
+  cellOf(sb, g, "2027-01-31")?.focus();
+  await sb.drain();
+  await pressKey(sb, sb.doc.activeElement, "PageDown");
+  c.check(sb.doc.activeElement?.dataset?.date === "2027-02-28" && u.text("infoCalTitle") === "February 2027", () => `PageDown clamp: ${sb.doc.activeElement?.dataset?.date}`);
+  await pressKey(sb, sb.doc.activeElement, " ");
+  c.check(u.must("infoDate").value === "2027-02-28" && sb.doc.activeElement?.dataset?.date === "2027-02-28", () => `Space: ${u.must("infoDate").value}`);
+  oneStop("Space");
+  cleanRun(c, sb, "calendar-keyboard");
+}
+
+async function probeCalendarOutOfRange({ make }, c) {
+  const sb = await make(T_MAIN);
+  const u = uiDriver(sb);
+  const g = "infoCalGrid";
+  for (const [date, title, edge, key, btn] of [["9999-12-15", "December 9999", "9999-12-31", "ArrowRight", "infoCalNextBtn"], ["0001-01-15", "January 1", "0001-01-01", "ArrowLeft", "infoCalPrevBtn"]]) {
+    await u.set("infoDate", date);
+    const cells = u.must(g).children;
+    const dis = cells.filter((x) => x.classList.contains("out-of-range"));
+    // 0001-01-01 is a Monday, so a Monday-first January 1 has no cell before it.
+    c.check((dis.length > 0 || date.startsWith("0001")) && dis.every((x) => x.disabled) && cells.filter((x) => x.disabled).every((x) => x.classList.contains("out-of-range")),
+      () => `${date}: out-of-range cells ${dis.length}, disabled ${cells.filter((x) => x.disabled).length} (${u.text("infoCalTitle")})`);
+    c.check(u.text("infoCalTitle").startsWith(title.split(" ")[0]) && u.must(btn).disabled, () => `${date}: ${btn} not disabled at the end of the range`);
+    if (dis[0]) {
+      await u.clickEl(dis[0]);
+      dis[0].focus();
+    }
+    c.check(u.must("infoDate").value === date && sb.doc.activeElement !== dis[0], () => `${date}: a disabled cell was picked or focused`);
+    const last = cellOf(sb, g, edge);
+    last?.focus();
+    await sb.drain();
+    await pressKey(sb, sb.doc.activeElement, key);
+    c.check(sb.doc.activeElement?.dataset?.date === edge && u.must("infoDate").value === date, () => `${date}: ${key} left the range (${sb.doc.activeElement?.dataset?.date})`);
+    c.check(tabStops(sb, g).length === 1 && !tabStops(sb, g)[0].disabled, `${date}: tab stop on a disabled cell`);
+  }
+  cleanRun(c, sb, "calendar-out-of-range-disabled");
+}
+
+// --- A2 countdown ---------------------------------------------------------------
+
+async function probeCountdownRestoreFuture({ make, ctx, surface }, c) {
+  const rec = { schemaVersion: 1, targetDate: "2026-12-25", targetTime: "09:30", savedAtMs: T_MAIN - 86400000, finishedSeenAtMs: null };
+  const raw = JSON.stringify(rec);
+  const sb = await make(T_MAIN, seedStore(surface, { countdown: raw }));
+  const u = uiDriver(sb);
+  const r = await cdExpect(ctx, T_MAIN, "2026-12-25", "09:30");
+  c.check(u.must("cdTarget").value === "2026-12-25" && u.must("cdTime").value === "09:30", () => `restored fields ${u.must("cdTarget").value} ${u.must("cdTime").value}`);
+  c.check(u.text("cdClock") === r.clockText, () => `restored clock "${u.text("cdClock")}" != "${r.clockText}"`);
+  c.check(u.text("cdPhase") === CD_TEXT.chipRestored && u.text("cdStatus") === CD_TEXT.restored(r.text, whenText(r)), () => `restored chip/status: ${u.text("cdPhase")} / ${u.text("cdStatus")}`);
+  c.check(!u.hidden("cdSavedNote") && u.text("cdSavedNoteText") === CD_TEXT.saved && !u.hidden("cdForgetBtn"), "saved note after restore");
+  c.check(cdWrites(sb) === 0 && cdRaw(sb) === raw, "restore wrote the record");
+  await sb.advance(3050);
+  const r3 = await cdExpect(ctx, sb.timers.now, "2026-12-25", "09:30");
+  // "restored" is the first render only: the next tick says counting down,
+  // so the polite status never repeats a stale time left.
+  c.check(u.text("cdClock") === r3.clockText && u.text("cdPhase") === CD_TEXT.chipCounting && u.text("cdStatus") === CD_TEXT.counting(whenText(r3)) && cdWrites(sb) === 0,
+    () => `after 3 s: ${u.text("cdClock")} / ${u.text("cdPhase")} / ${u.text("cdStatus")} / writes ${cdWrites(sb)}`);
+  await u.set("cdTarget", "2026-12-26");
+  const rec2 = cdRecord(sb);
+  c.check(u.text("cdPhase") === CD_TEXT.chipCounting && u.text("cdStatus").startsWith(CD_TEXT.counting("2026-12-26 09:30:00").slice(0, -1)), () => `new target: ${u.text("cdPhase")} / ${u.text("cdStatus")}`);
+  c.check(cdWrites(sb) === 1 && rec2?.targetDate === "2026-12-26" && rec2?.finishedSeenAtMs === null && rec2?.savedAtMs === sb.timers.now, () => `new target record ${JSON.stringify(rec2)}`);
+  cleanRun(c, sb, "countdown-restore-future");
+}
+
+async function probeCountdownFinishedWhileClosed({ make, ctx, surface }, c) {
+  const rec = { schemaVersion: 1, targetDate: "2026-11-16", targetTime: "09:58", savedAtMs: T_MAIN - 2 * 86400000, finishedSeenAtMs: null };
+  const seed = seedStore(surface, { countdown: JSON.stringify(rec) });
+  const r = await cdExpect(ctx, T_MAIN, "2026-11-16", "09:58");
+  // Opened in a hidden window: nothing is "seen" (and written) until visible.
+  const hid = await make(T_MAIN, { ...seed, hidden: true });
+  const uh = uiDriver(hid);
+  c.check(uh.text("cdPhase") === CD_TEXT.chipFinishedClosed && cdWrites(hid) === 0, () => `hidden launch: ${uh.text("cdPhase")} / writes ${cdWrites(hid)}`);
+  await hid.advance(2000);
+  c.check(cdWrites(hid) === 0, "a hidden page wrote finishedSeenAtMs");
+  setPageVisible(hid, true);
+  await hid.drain();
+  c.check(cdWrites(hid) === 1 && cdRecord(hid)?.finishedSeenAtMs === hid.timers.now, () => `becoming visible: writes ${cdWrites(hid)} / ${JSON.stringify(cdRecord(hid))}`);
+
+  const sb = await make(T_MAIN, seed);
+  const u = uiDriver(sb);
+  c.check(u.text("cdPhase") === CD_TEXT.chipFinishedClosed && u.must("cdPhase").classList.contains("is-finished") && u.text("cdStatus") === CD_TEXT.finishedClosed(whenText(r)),
+    () => `launch after the target: ${u.text("cdPhase")} / ${u.text("cdStatus")}`);
+  c.check(u.text("cdClock") === r.clockText && u.must("cdClock").classList.contains("is-past"), () => `count-up clock ${u.text("cdClock")}`);
+  const seen = cdRecord(sb);
+  c.check(cdWrites(sb) === 1 && canonical(seen) === canonical({ ...rec, finishedSeenAtMs: T_MAIN }), () => `the one finishedSeenAtMs write: ${cdWrites(sb)} / ${JSON.stringify(seen)}`);
+  await sb.advance(5000);
+  c.check(cdWrites(sb) === 1 && u.text("cdPhase") === CD_TEXT.chipFinishedClosed, () => `ticks: writes ${cdWrites(sb)} / ${u.text("cdPhase")}`);
+  const again = await make(T_MAIN + 60000, persisted(sb));
+  const ua = uiDriver(again);
+  c.check(ua.text("cdPhase") === CD_TEXT.chipFinished && ua.text("cdStatus") === CD_TEXT.finished(whenText(r)) && cdWrites(again) === 0,
+    () => `next launch: ${ua.text("cdPhase")} / ${ua.text("cdStatus")} / writes ${cdWrites(again)}`);
+  cleanRun(c, sb, "countdown-finished-while-closed");
+  cleanRun(c, again, "countdown-finished-while-closed (relaunch)");
+}
+
+async function probeCountdownFinishedOpenThenClosed({ make, ctx }, c) {
+  const sb = await make(T_MAIN);
+  const u = uiDriver(sb);
+  await u.set("cdTime", "10:01");
+  await u.set("cdTarget", localIso(T_MAIN));
+  c.check(u.text("cdPhase") === CD_TEXT.chipCounting && cdWrites(sb) === 1, () => `before: ${u.text("cdPhase")} / writes ${cdWrites(sb)}`);
+  await sb.advance(62000);
+  const r = await cdExpect(ctx, sb.timers.now, localIso(T_MAIN), "10:01");
+  const rec = cdRecord(sb);
+  c.check(u.text("cdPhase") === CD_TEXT.chipFinished && u.text("cdStatus") === CD_TEXT.finished(whenText(r)), () => `finished while open: ${u.text("cdPhase")} / ${u.text("cdStatus")}`);
+  c.check(cdWrites(sb) === 2 && rec?.finishedSeenAtMs >= T_MAIN + 60000 && rec?.finishedSeenAtMs <= T_MAIN + 62000, () => `seen write: ${cdWrites(sb)} / ${JSON.stringify(rec)}`);
+  await sb.advance(5000);
+  c.check(cdWrites(sb) === 2, "more writes after the finish");
+  await closePage(sb);
+  c.check(cdWrites(sb) === 2, "closing rewrote the record");
+  const again = await make(T_MAIN + 3600000, persisted(sb));
+  const ua = uiDriver(again);
+  c.check(ua.text("cdPhase") === CD_TEXT.chipFinished && ua.text("cdStatus") === CD_TEXT.finished(whenText(r)) && cdWrites(again) === 0,
+    () => `relaunch shows plain finished: ${ua.text("cdPhase")} / ${ua.text("cdStatus")} / writes ${cdWrites(again)}`);
+  cleanRun(c, sb, "countdown-finished-while-open-then-closed");
+}
+
+async function probeCountdownEmptySegment({ make }, c) {
+  const sb = await make(T_MAIN);
+  const u = uiDriver(sb);
+  await u.set("cdTarget", "2026-12-31");
+  await u.set("cdTime", "09:00");
+  const raw = cdRaw(sb);
+  const w = cdWrites(sb);
+  c.check(cdRecord(sb)?.targetTime === "09:00", "commit not saved");
+  clearSegment(u.must("cdTarget"));
+  await sb.drain();
+  c.check(cdRaw(sb) === raw && cdWrites(sb) === w, "a cleared date segment changed the record");
+  c.check(!u.hidden("cdSavedNote"), "a cleared segment hid the saved note");
+  u.must("cdTarget").value = "2026-12-31";
+  u.must("cdTarget").dispatchEvent(new MockEvent("input", { bubbles: true }));
+  await sb.drain();
+  clearSegment(u.must("cdTime"));
+  await sb.drain();
+  c.check(cdRaw(sb) === raw && cdWrites(sb) === w, "a cleared time segment saved a time-less target");
+  await u.set("cdTarget", "");
+  c.check(cdRaw(sb) === raw && cdWrites(sb) === w, "an emptied date field cleared or changed the record");
+  await closePage(sb);
+  c.check(cdRaw(sb) === raw && cdWrites(sb) === w, "the page-hide flush changed the record");
+  const again = await make(T_MAIN + 1000, persisted(sb));
+  const ua = uiDriver(again);
+  c.check(ua.must("cdTarget").value === "2026-12-31" && ua.must("cdTime").value === "09:00" && ua.text("cdPhase") === CD_TEXT.chipRestored,
+    () => `relaunch: ${ua.must("cdTarget").value} ${ua.must("cdTime").value} / ${ua.text("cdPhase")}`);
+  cleanRun(c, sb, "countdown-empty-segment-keeps-record");
+}
+
+async function probeCountdownForget({ make, surface }, c) {
+  const sb = await make(T_MAIN, seedStore(surface, { countdownBak: "older backup" }));
+  const u = uiDriver(sb);
+  await u.set("cdTarget", "2026-12-31");
+  c.check(cdRecord(sb)?.targetDate === "2026-12-31" && !u.hidden("cdForgetBtn"), "commit not saved");
+  await u.click("cdForgetBtn");
+  c.check(cdRaw(sb) === null && cdBak(sb) === "older backup", () => `Forget: record ${cdRaw(sb)} / bak ${cdBak(sb)}`);
+  c.check(u.hidden("cdSavedNote") && u.must("cdTarget").value === "2026-12-31", "Forget hid nothing or cleared the field");
+  await closePage(sb);
+  c.check(cdRaw(sb) === null, "the page-hide flush saved the forgotten countdown again");
+  const again = await make(T_MAIN + 1000, persisted(sb));
+  const ua = uiDriver(again);
+  c.check(ua.must("cdTarget").value === "" && ua.text("cdPhase") === "" && ua.hidden("cdPhase"), "a forgotten countdown was restored");
+  setPageVisible(sb, true);
+  await u.set("cdTarget", "2026-12-31");
+  c.check(cdRecord(sb)?.targetDate === "2026-12-31", "an explicit commit after Forget was not saved");
+  cleanRun(c, sb, "countdown-forget-clears");
+}
+
+async function probeCountdownReset({ make }, c) {
+  const sb = await make(T_MAIN);
+  const u = uiDriver(sb);
+  await u.set("cdTarget", "2026-12-31");
+  await u.set("cdTime", "08:00");
+  c.check(cdRecord(sb)?.targetTime === "08:00", "commit not saved");
+  await u.click("resetCdBtn");
+  c.check(cdRaw(sb) === null && u.must("cdTarget").value === "" && u.must("cdTime").value === "" && u.text("cdClock") === "—", "clear did not forget the countdown");
+  c.check(u.hidden("cdPhase") && u.hidden("cdSavedNote"), "chip or note visible after clear");
+  await u.set("cdTarget", "2027-03-01");
+  c.check(cdRecord(sb)?.targetDate === "2027-03-01", "commit after clear not saved");
+  // Clear all (one tap in the header row) only empties the fields: the
+  // saved countdown, its note and Forget stay, and the next launch restores it.
+  await u.click("clearAllBtn");
+  await closePage(sb);
+  c.check(cdRecord(sb)?.targetDate === "2027-03-01" && u.must("cdTarget").value === "" && u.text("cdClock") === "—", () => `clear all: record ${cdRaw(sb)}, field "${u.must("cdTarget").value}"`);
+  c.check(!u.hidden("cdSavedNote") && u.text("cdSavedNoteText") === CD_TEXT.saved && !u.hidden("cdForgetBtn"), "clear all hid the saved note or Forget");
+  const again = await make(T_MAIN + 1000, persisted(sb));
+  c.check(uiDriver(again).must("cdTarget").value === "2027-03-01", "the countdown kept by clear all was not restored");
+  cleanRun(c, sb, "countdown-reset-clears");
+}
+
+async function probeCountdownNoWriteOnTick({ make, ctx }, c) {
+  const sb = await make(T_MAIN);
+  const u = uiDriver(sb);
+  await u.set("cdTarget", "2026-12-25");
+  await u.set("cdTime", "09:30");
+  const w = cdWrites(sb);
+  const clock0 = u.text("cdClock");
+  await sb.advance(15000);
+  c.check(cdWrites(sb) === w && u.text("cdClock") !== clock0, () => `15 s of ticks: writes ${cdWrites(sb) - w}`);
+  await sb.advance(61000);
+  c.check(cdWrites(sb) === w, "the minute rollover check wrote");
+  await u.type("cdTarget", "2026-12-26");
+  const r = await cdExpect(ctx, sb.timers.now, "2026-12-26", "09:30");
+  c.check(cdWrites(sb) === w && cdRecord(sb)?.targetDate === "2026-12-25", "an input event (no commit) saved");
+  c.check(u.text("cdClock") === r.clockText, () => `input re-rendered ${u.text("cdClock")} vs ${r.clockText}`);
+  u.must("cdTarget").dispatchEvent(new MockEvent("change", { bubbles: true }));
+  await sb.drain();
+  c.check(cdWrites(sb) === w + 1 && cdRecord(sb)?.targetDate === "2026-12-26", "the change commit was not saved");
+  await u.set("cdTarget", "2026-11-01");
+  c.check(cdWrites(sb) === w + 3 && Number.isSafeInteger(cdRecord(sb)?.finishedSeenAtMs), () => `past target: writes ${cdWrites(sb) - w} (want save + one seen write)`);
+  await sb.advance(10000);
+  c.check(cdWrites(sb) === w + 3, () => `ticks after the finish wrote ${cdWrites(sb) - w - 3} more`);
+  cleanRun(c, sb, "countdown-no-write-on-tick");
+}
+
+async function probeCountdownBadRecords({ make, surface }, c) {
+  const rec = (o = {}) => JSON.stringify({ schemaVersion: 1, targetDate: "2026-12-31", targetTime: "", savedAtMs: 1, finishedSeenAtMs: null, ...o });
+  // Invalid records: backed up once, ignored, and the store stays writable.
+  const bad = [rec({ targetDate: "2026-02-30" }), rec({ targetTime: "24:00" }), rec({ targetTime: "9:30" }), rec({ targetTime: "09:30:00" }), rec({ zone: "x" }),
+    rec({ schemaVersion: "1" }), rec({ savedAtMs: -1 }), rec({ savedAtMs: 2 ** 53 }), rec({ finishedSeenAtMs: "1" }), '{"targetDate":"2026-12-31"}', "[1]", "{not json"];
+  for (const v of bad) {
+    const sb = await make(T_MAIN, seedStore(surface, { countdown: v }));
+    const u = uiDriver(sb);
+    c.check(u.must("cdTarget").value === "" && u.hidden("cdSavedNote") && cdBak(sb) === v && cdRaw(sb) === v && cdWrites(sb) === 0,
+      () => `invalid ${excerpt(v, 70)}: target "${u.must("cdTarget").value}", bak ${cdBak(sb) === v}, writes ${cdWrites(sb)}`);
+    if (v === bad[0]) {
+      await u.set("cdTarget", "2027-01-05");
+      c.check(cdRecord(sb)?.targetDate === "2027-01-05", "a commit after a corrupt record was not saved");
+      const again = await make(T_MAIN, persisted(sb));
+      c.check(uiDriver(again).must("cdTarget").value === "2027-01-05" && cdBak(again) === v, "the replacement was not restored, or the backup was rewritten");
+    }
+    cleanRun(c, sb, `invalid record ${excerpt(v, 40)}`);
+  }
+  // A newer-version record: ignored, never written, cleared or backed up.
+  const newer = '{"schemaVersion":2,"targetDate":"2027-01-01","targetTime":"","savedAtMs":1,"finishedSeenAtMs":null,"zone":"Africa/Cairo"}';
+  let sb = await make(T_MAIN, seedStore(surface, { countdown: newer }));
+  let u = uiDriver(sb);
+  c.check(u.must("cdTarget").value === "" && !u.hidden("cdSavedNote") && u.text("cdSavedNoteText") === CD_TEXT.newer && u.hidden("cdForgetBtn"),
+    () => `newer record: target "${u.must("cdTarget").value}", note "${u.text("cdSavedNoteText")}"`);
+  await u.set("cdTarget", "2026-12-31");
+  await u.click("resetCdBtn");
+  await u.set("cdTarget", "2026-12-30");
+  await u.click("clearAllBtn");
+  await closePage(sb);
+  c.check(cdRaw(sb) === newer && cdBak(sb) === null && cdWrites(sb) === 0, "a newer-version record was written, cleared or backed up");
+  cleanRun(c, sb, "newer record");
+  // Over the 1 KiB cap: corrupt on both surfaces. The desktop renames the
+  // file aside whole (it is too large to copy), mobile copies it to _bak;
+  // either way the store is writable again, never blocked for good.
+  const big = rec({ pad: "x".repeat(1100) });
+  sb = await make(T_MAIN, seedStore(surface, { countdown: big }));
+  u = uiDriver(sb);
+  c.check(u.hidden("cdSavedNote"), () => `oversize: note "${u.text("cdSavedNoteText")}"`);
+  await u.set("cdTarget", "2026-12-29");
+  await closePage(sb);
+  c.check(cdBak(sb) === big && cdRecord(sb)?.targetDate === "2026-12-29", () => `oversize on ${surface}: not backed up, or the store stayed blocked (note "${u.text("cdSavedNoteText")}")`);
+  if (surface === "desktop") {
+    // With .bak taken, the over-cap file goes to a fresh name, never over it.
+    sb = await make(T_MAIN, seedStore(surface, { countdown: big, countdownBak: "older backup" }));
+    u = uiDriver(sb);
+    await u.set("cdTarget", "2026-12-27");
+    c.check(cdBak(sb) === "older backup" && canonical(countdownExtraBaks(sb)) === canonical([big]) && cdRecord(sb)?.targetDate === "2026-12-27",
+      () => `oversize with .bak taken: bak "${excerpt(String(cdBak(sb)), 30)}", extra ${countdownExtraBaks(sb).length}`);
+    // The backend refuses an over-cap or newer file that appears after
+    // launch, and the UI then blocks instead of claiming it saved.
+    sb.backend.disk.countdown = big;
+    await u.set("cdTarget", "2026-12-26");
+    c.check(cdRaw(sb) === big && u.text("cdSavedNoteText") === CD_TEXT.unreadable && u.hidden("cdForgetBtn"), () => `late over-cap file: note "${u.text("cdSavedNoteText")}"`);
+    sb = await make(T_MAIN);
+    u = uiDriver(sb);
+    const late = '{"schemaVersion":2,"targetDate":"2027-01-01"}';
+    sb.backend.disk.countdown = late;
+    await u.set("cdTarget", "2026-12-25");
+    await u.click("resetCdBtn");
+    c.check(cdRaw(sb) === late && u.text("cdSavedNoteText") === CD_TEXT.newer, () => `late newer file: note "${u.text("cdSavedNoteText")}"`);
+  }
+  // A failed save never shows the saved note, and the next commit retries.
+  sb = await make(T_MAIN);
+  u = uiDriver(sb);
+  if (surface === "desktop") sb.backend.state.failCountdownSave = 1;
+  else sb.storage.refuse.add(COUNTDOWN_KEY);
+  await u.set("cdTarget", "2027-04-01");
+  c.check(cdRaw(sb) === null && !u.hidden("cdSavedNote") && u.text("cdSavedNoteText") === CD_TEXT.writeFailed && !u.hidden("cdForgetBtn"),
+    () => `failed save: record ${cdRaw(sb)}, note "${u.text("cdSavedNoteText")}"`);
+  if (surface === "mobile") sb.storage.refuse.delete(COUNTDOWN_KEY);
+  u.must("cdTarget").dispatchEvent(new MockEvent("change", { bubbles: true }));
+  await sb.drain();
+  c.check(cdRecord(sb)?.targetDate === "2027-04-01" && u.text("cdSavedNoteText") === CD_TEXT.saved, () => `retry after a failed save: record ${cdRaw(sb)}, note "${u.text("cdSavedNoteText")}"`);
+  cleanRun(c, sb, "failed save");
+  // Desktop: a file that exists but cannot be read (locked) is never touched.
+  if (surface === "desktop") {
+    sb = await make(T_MAIN, seedStore(surface, { countdown: rec(), countdownUnreadable: true }));
+    u = uiDriver(sb);
+    await u.set("cdTarget", "2026-12-28");
+    await u.click("resetCdBtn");
+    await closePage(sb);
+    c.check(u.text("cdSavedNoteText") === CD_TEXT.unreadable && cdRaw(sb) === rec() && cdWrites(sb) === 0 && cdBak(sb) === null, () => `unreadable: note "${u.text("cdSavedNoteText")}", writes ${cdWrites(sb)}`);
+  }
+  // The page-hide flush saves a valid value that was typed but not committed.
+  sb = await make(T_MAIN);
+  u = uiDriver(sb);
+  await u.type("cdTarget", "2027-02-14");
+  c.check(cdWrites(sb) === 0, "input alone saved");
+  await closePage(sb);
+  c.check(cdRecord(sb)?.targetDate === "2027-02-14" && cdWrites(sb) === 1, "the page-hide flush did not save the typed target");
+  setPageVisible(sb, true);
+  await sb.drain();
+  sb.win.dispatchEvent(new MockEvent("pagehide"));
+  await sb.drain();
+  c.check(cdWrites(sb) === 1, "a second flush of the same target wrote again");
+  cleanRun(c, sb, "page-hide flush");
+}
+
+async function probeCountdownStorageEvent({ make }, c) {
+  const sb = await make(T_MAIN);
+  const u = uiDriver(sb);
+  const otherTab = async (value, area = sb.storage) => {
+    sb.storage.external(COUNTDOWN_KEY, value);
+    sb.win.dispatchEvent(new MockEvent("storage", { key: COUNTDOWN_KEY, storageArea: area }));
+    await sb.drain();
+  };
+  const rec = (date, time, at) => JSON.stringify({ schemaVersion: 1, targetDate: date, targetTime: time, savedAtMs: at, finishedSeenAtMs: null });
+  c.check(!u.must("card-countdown").contains(sb.doc.activeElement), "focus starts inside the countdown card");
+  await otherTab(rec("2027-01-10", "08:00", T_MAIN + 5));
+  c.check(u.must("cdTarget").value === "2027-01-10" && u.must("cdTime").value === "08:00" && u.text("cdPhase") === CD_TEXT.chipCounting && !u.hidden("cdSavedNote"),
+    () => `adopt: ${u.must("cdTarget").value} ${u.must("cdTime").value} / ${u.text("cdPhase")}`);
+  c.check(cdWrites(sb) === 0, "adopting another tab's record wrote");
+  u.must("cdTarget").focus();
+  await otherTab(rec("2027-02-01", "", T_MAIN + 6));
+  c.check(u.must("cdTarget").value === "2027-01-10", "an event arrived while editing the card was not ignored");
+  u.must("betweenStart").focus();
+  await otherTab(null);
+  c.check(u.hidden("cdSavedNote") && u.must("cdTarget").value === "2027-01-10" && cdWrites(sb) === 0, "a clear in another tab was not adopted (or wrote)");
+  await closePage(sb);
+  c.check(cdRaw(sb) === null, "the page-hide flush re-saved a countdown cleared in another tab");
+  setPageVisible(sb, true);
+  const newer = '{"schemaVersion":2,"targetDate":"2027-05-05","extra":true}';
+  await otherTab(newer);
+  c.check(!u.hidden("cdSavedNote") && u.text("cdSavedNoteText") === CD_TEXT.newer && u.hidden("cdForgetBtn"), () => `newer record note: "${u.text("cdSavedNoteText")}"`);
+  await u.set("cdTarget", "2027-03-03");
+  await closePage(sb);
+  c.check(cdRaw(sb) === newer && cdBak(sb) === null && cdWrites(sb) === 0, "a newer record was overwritten or backed up");
+  setPageVisible(sb, true);
+  await otherTab(rec("2027-04-04", "", T_MAIN + 7), new MemoryStorage());
+  c.check(u.must("cdTarget").value === "2027-03-03", "an event from another storage area was applied");
+  cleanRun(c, sb, "countdown-storage-event");
+}
+
+// --- A3 history read-only --------------------------------------------------------
+
+async function probeHistoryReadOnly({ make, surface }, c) {
+  const bannerShown = (u, reason) => !u.hidden("historyReadOnlyBanner") && u.text("historyReadOnlyText") === HISTORY_TEXT.banner && u.text("historyReadOnlyDetail") === HISTORY_TEXT[reason];
+  const record = async (u) => {
+    await u.set("infoDate", "2024-02-29");
+    await u.enter("infoDate");
+    await u.click("calcInfoBtn");
+  };
+  // 1. Corrupt (a dropped entry): backed up once, read-only, nothing written.
+  const raw = JSON.stringify([GOOD_ENTRY, { ...GOOD_ENTRY, id: 9, calculator: "__proto__" }]);
+  let sb = await make(T_MAIN, seedStore(surface, { history: raw }));
+  let u = uiDriver(sb);
+  c.check(bannerShown(u, "corrupt"), () => `corrupt banner: hidden=${u.hidden("historyReadOnlyBanner")} "${u.text("historyReadOnlyDetail")}"`);
+  c.check(historyBak(sb) === raw && historyRaw(sb) === raw, "corrupt history not backed up once or changed");
+  c.check(u.must("clearHistoryBtn").disabled && u.text("historyCount") === "(1 / 500)", "clear enabled or valid entries not listed");
+  const del = u.must("historyList").querySelector(".history-delete-btn");
+  c.check(Boolean(del) && del.disabled, "delete enabled while read-only");
+  await record(u);
+  if (del) await u.clickEl(del);
+  await u.click("clearHistoryBtn");
+  c.check(historyRaw(sb) === raw && u.text("historyCount") === "(1 / 500)", "a read-only history was written");
+  await u.click("historyRetryBtn");
+  c.check(bannerShown(u, "corrupt") && historyRaw(sb) === raw && historyBak(sb) === raw, "retry of a still-corrupt history");
+  await u.click("historyResetBtn");
+  c.check(!u.hidden("historyResetConfirm") && u.hidden("historyResetBtn"), "start-new-history confirm not shown");
+  await u.click("cancelHistoryResetBtn");
+  c.check(u.hidden("historyResetConfirm") && !u.hidden("historyResetBtn") && bannerShown(u, "corrupt") && historyRaw(sb) === raw, "cancel did not keep the read-only history");
+  await u.click("historyResetBtn");
+  await u.click("confirmHistoryResetBtn");
+  c.check(u.hidden("historyReadOnlyBanner") && !u.must("clearHistoryBtn").disabled && u.text("historyCount") === "(0 / 500)", "start a new history did not make it writable");
+  c.check(historyBak(sb) === raw && JSON.parse(historyRaw(sb) ?? "null")?.length === 0, () => `after reset: stored ${excerpt(String(historyRaw(sb)), 80)} / bak kept ${historyBak(sb) === raw}`);
+  await record(u);
+  const after = JSON.parse(historyRaw(sb) ?? "[]");
+  c.check(after.length === 1 && after[0].id > GOOD_ENTRY.id, () => `history after reset: ${excerpt(JSON.stringify(after), 160)}`);
+  cleanRun(c, sb, "history-read-only (corrupt)");
+
+  // 2. Too large and 3. newer schema: read-only, never backed up.
+  for (const [reason, value] of [["too_large", `[${" ".repeat(HISTORY_MAX_BYTES)}]`], ["newer_schema", '{"schemaVersion":2,"entries":[]}']]) {
+    sb = await make(T_MAIN, seedStore(surface, { history: value }));
+    u = uiDriver(sb);
+    c.check(bannerShown(u, reason), () => `${reason} banner: "${u.text("historyReadOnlyDetail")}"`);
+    await record(u);
+    c.check(historyRaw(sb) === value && historyBak(sb) === null, () => `${reason}: written or backed up`);
+    cleanRun(c, sb, `history-read-only (${reason})`);
+  }
+
+  // 3b. Start a new history while a different backup already exists (an
+  // earlier corruption): the current value is not in any backup, so it is
+  // kept under a fresh name; the old backup is never replaced.
+  for (const [reason, value] of [["newer_schema", '{"schemaVersion":3,"entries":[1]}'], ["too_large", `[${"	".repeat(HISTORY_MAX_BYTES)}]`]]) {
+    sb = await make(T_MAIN, seedStore(surface, { history: value, historyBak: "older backup" }));
+    u = uiDriver(sb);
+    c.check(bannerShown(u, reason), () => `${reason} with a backup: "${u.text("historyReadOnlyDetail")}"`);
+    await u.click("historyResetBtn");
+    await u.click("confirmHistoryResetBtn");
+    const extra = historyExtraBaks(sb);
+    c.check(historyBak(sb) === "older backup" && extra.length === 1 && extra[0] === value && JSON.parse(historyRaw(sb) ?? "null")?.length === 0,
+      () => `${reason} reset with a backup: bak "${excerpt(String(historyBak(sb)), 20)}", extra ${extra.length}, kept ${extra[0] === value}`);
+    c.check(u.hidden("historyReadOnlyBanner"), `${reason} reset with a backup did not make history writable`);
+    cleanRun(c, sb, `history-read-only (${reason} reset with a backup)`);
+  }
+
+  // 4. Retry after the stored history was repaired: writable, ids continue.
+  sb = await make(T_MAIN, seedStore(surface, { history: "{not json" }));
+  u = uiDriver(sb);
+  setHistoryRaw(sb, JSON.stringify([GOOD_ENTRY]));
+  await u.click("historyRetryBtn");
+  c.check(u.hidden("historyReadOnlyBanner") && u.text("historyCount") === "(1 / 500)", "retry after repair is not writable");
+  await record(u);
+  const repaired = JSON.parse(historyRaw(sb) ?? "[]");
+  c.check(repaired.length === 2 && repaired[0].id === GOOD_ENTRY.id + 1, () => `after repair: ${excerpt(JSON.stringify(repaired.map((e) => e.id)), 80)}`);
+
+  // 5. Desktop: a file that cannot be read (locked) is never touched, and a
+  // reset that cannot keep it stays read-only.
+  if (surface === "desktop") {
+    const locked = JSON.stringify([GOOD_ENTRY]);
+    sb = await make(T_MAIN, seedStore(surface, { history: locked, historyReadError: true }));
+    u = uiDriver(sb);
+    c.check(bannerShown(u, "read_error") && historyBak(sb) === null, "read error banner, or a .bak was attempted");
+    await record(u);
+    await u.click("historyResetBtn");
+    await u.click("confirmHistoryResetBtn");
+    c.check(!u.hidden("historyReadOnlyBanner") && u.text("historyReadOnlyDetail") === HISTORY_TEXT.resetFailed && historyRaw(sb) === locked, () => `failed reset: "${u.text("historyReadOnlyDetail")}"`);
+    sb.backend.disk.historyReadError = false;
+    await u.click("historyRetryBtn");
+    c.check(u.hidden("historyReadOnlyBanner") && u.text("historyCount") === "(1 / 500)" && historyRaw(sb) === locked, "retry once readable");
+    cleanRun(c, sb, "history-read-only (read_error)");
+  }
+}
+
+const V110_PROBES = [
+  ["calendar-click-info", "a Date Info calendar click (every day cell a <button>, one tab stop per grid, today marked) fills the date, recomputes, marks the cell selected (aria-pressed, \", selected\") and writes no history; an out-of-month cell moves the view; the header Today button changes the view only", probeCalendarClickInfo],
+  ["calendar-click-countdown", "a Countdown calendar click keeps the time, saves {schemaVersion 1, date, time, savedAtMs, finishedSeenAtMs null}, shows counting down and the saved note; a past day shows finished and records finishedSeenAtMs once", probeCalendarClickCountdown],
+  ["biz-range-pick", "Business Days picks go start → end → start, Shift+click sets End, focusing an input or a radio picks the target, and the start/end marks come from the field values (End marked even when includeEndDay=false stops the engine range a day earlier; a backward range marks both ends)", probeBizRangePick],
+  ["calendar-view-follows-click", "a calendar click moves the view to the clicked month while typed input keeps the v1.0.0 earlier-date anchoring; the month and Today buttons change the view only", probeCalendarViewFollowsClick],
+  ["calendar-keyboard", "arrows, Home/End, PageUp/PageDown (Shift = a year, month ends clamped) move focus without selecting, across months, with exactly one tabindex=0 per grid on the focused cell; Enter and Space select and keep focus", probeCalendarKeyboard],
+  ["calendar-out-of-range-disabled", "cells outside 0001-01-01..9999-12-31 are disabled (and only they are): no click, no focus, no keyboard move onto them, and the month buttons stop at the ends", probeCalendarOutOfRange],
+  ["countdown-restore-future", "a saved future countdown is restored at launch with the exact time left on the first render, the restored chip and \"Countdown restored: … left until …\" (then counting down from the next tick), without writing; a new commit saves and shows counting down", probeCountdownRestoreFuture],
+  ["countdown-finished-while-closed", "a saved target that passed while closed (finishedSeenAtMs null, fixed clock) shows \"finished while closed\", writes finishedSeenAtMs once (only once visible), and the next launch shows plain finished", probeCountdownFinishedWhileClosed],
+  ["countdown-finished-while-open-then-closed", "a countdown that finishes on screen records finishedSeenAtMs once; closing and reopening shows plain finished, not finished while closed", probeCountdownFinishedOpenThenClosed],
+  ["countdown-empty-segment-keeps-record", "a cleared date or time segment (\"\" with badInput), an emptied field, page hide and close never change the saved record; the next launch restores it", probeCountdownEmptySegment],
+  ["countdown-forget-clears", "Forget removes only the record (never its backup, never localStorage.clear()), the page-hide flush does not re-save it, the next launch starts empty, and an explicit commit saves again", probeCountdownForget],
+  ["countdown-reset-clears", "the card's clear forgets the saved countdown and resets the chip, note and clock; clear all only empties the fields and keeps the saved countdown (restored at the next launch)", probeCountdownReset],
+  ["countdown-no-write-on-tick", "ticks, the minute rollover check and input events never write; only a change commit saves, plus the single finishedSeenAtMs write when a target passes", probeCountdownNoWriteOnTick],
+  ["countdown-bad-records", "invalid saved countdowns (bad date, 24:00, 9:30, seconds, unknown key, wrong types, unsafe timestamps, not JSON) are backed up once, ignored and then replaced by the next commit; a newer-version record is never written, cleared or backed up, even by Clear; an over-cap record is kept (desktop: renamed aside whole, to a fresh name when .bak is taken) and the store stays writable; a locked desktop file, or an over-cap or newer file that appears after launch, is refused by the backend and left untouched; a failed save never shows the saved note and the next commit retries; the page-hide flush saves a typed but uncommitted target once", probeCountdownBadRecords]
+];
+
+async function runV110Suite(slice, ctx, make, surface) {
+  const P = { make, ctx, surface };
+  for (const [id, desc, probe] of V110_PROBES) {
+    const crit = slice.criterion(id, `${surface}: ${desc}`);
+    await guard(crit, id, () => probe(P, crit));
+  }
+  if (surface === "mobile") {
+    const crit = slice.criterion("countdown-storage-event", "mobile: another tab's countdown write, clear or newer-version record is adopted without writing when focus is outside the card, ignored while editing it, never re-saved by the page-hide flush, and events from another storage area are ignored");
+    await guard(crit, "storage event", () => probeCountdownStorageEvent(P, crit));
+  }
+  const hist = slice.criterion("history-read-only-banner", `${surface}: unreadable stored history (corrupt → backed up once; too large, newer schema${surface === "desktop" ? ", read error" : ""} → no backup) shows the read-only banner with its reason, disables clear and delete, and is never written; Retry re-reads; the two-step "start a new history" keeps the old value (as the backup, or under a fresh backup name when a different backup already exists, never replacing it) and makes history writable with ids that never go backwards`);
+  await guard(hist, "history read-only", () => probeHistoryReadOnly(P, hist));
 }
 
 // ============================================================================
@@ -3665,8 +4767,12 @@ async function runSliceB(slice, ctx) {
   const sb = await make(T_MAIN);
   ctx.mobileSnaps = await runUiSuite(slice, sb, ctx);
   await runClockSuite(slice, make, ctx);
+  await runV110Suite(slice, ctx, make, "mobile");
 
-  const corrupt = slice.criterion("corrupt-storage", "corrupt or invalid stored history/settings are copied once to <key>_bak, defaults load (startup update check off, so no network), invalid or prototype-named history entries are dropped, and the app still works");
+  // v1.1.0 (plan A3): corrupt stored history is no longer replaced by an
+  // empty, writable one. It is copied to _bak and history turns read-only
+  // (the read-only flows themselves are in history-read-only-banner).
+  const corrupt = slice.criterion("corrupt-storage", "corrupt or invalid stored history/settings are copied once to <key>_bak; settings fall back to defaults (startup update check off, so no network); corrupt history (bad JSON, wrong shape, any dropped or prototype-named entry) turns read-only with the stored value untouched and the valid entries listed; the calculators still work");
   await guard(corrupt, "corrupt storage", async () => {
     const variants = [
       { [HISTORY_KEY]: "{not json", [SETTINGS_KEY]: "[1,2" },
@@ -3682,9 +4788,16 @@ async function runSliceB(slice, ctx) {
       }
       corrupt.check(u.text("historyCount") === "(0 / 500)" && !u.must("autoUpdateToggle").checked && m.fetchCalls.length === 0, () => `defaults not fail-closed (fetch ${m.fetchCalls.length})`);
       corrupt.check(u.must("weekendSatSunBtn").getAttribute("aria-pressed") === "true", "default weekend not shown");
+      const historyCorrupt = Object.hasOwn(storage, HISTORY_KEY);
+      corrupt.check(u.hidden("historyReadOnlyBanner") === !historyCorrupt, () => `read-only banner shown=${!u.hidden("historyReadOnlyBanner")} for corrupt history=${historyCorrupt}`);
       await u.set("infoDate", "2024-02-29");
+      corrupt.check(u.text("infoLiveResult").startsWith("→ Thursday"), () => `calculators broken: ${u.text("infoLiveResult")}`);
       await u.enter("infoDate");
-      corrupt.check(JSON.parse(m.storage.getItem(HISTORY_KEY)).length === 1, "history unusable after corrupt storage");
+      if (historyCorrupt) {
+        corrupt.check(m.storage.getItem(HISTORY_KEY) === storage[HISTORY_KEY] && u.text("historyCount") === "(0 / 500)", "a read-only history was written");
+      } else {
+        corrupt.check(JSON.parse(m.storage.getItem(HISTORY_KEY)).length === 1, "history unusable after corrupt settings");
+      }
       corrupt.check(m.errors.length === 0 && m.doc._errors.length === 0, () => `errors: ${m.errors.join(" | ")}`);
     }
     const good = { id: 7, timestampMs: 1, calculator: "info", calculatorLabel: "Date Info", inputs: { date: "2024-01-01" }, inputsText: "2024-01-01", resultText: "Monday, January 1, 2024", copyText: "Monday, January 1, 2024" };
@@ -3700,12 +4813,16 @@ async function runSliceB(slice, ctx) {
       { ...good, id: -1 },
       { ...good, id: 15, resultText: "line\nbreak" }
     ];
-    const m = await make(T_MAIN, { storage: { [HISTORY_KEY]: JSON.stringify(entries) } });
+    const raw = JSON.stringify(entries);
+    const m = await make(T_MAIN, { storage: { [HISTORY_KEY]: raw } });
     const items = m.doc.querySelectorAll(".history-item");
     corrupt.check(items.length === 1 && uiDriver(m).text("historyCount") === "(1 / 500)", () => `kept ${items.length} entries`);
-    corrupt.check(m.storage.getItem(`${HISTORY_KEY}_bak`) === null, "a valid array must not be backed up");
+    corrupt.check(m.storage.getItem(`${HISTORY_KEY}_bak`) === raw && m.storage.getItem(HISTORY_KEY) === raw, "dropped entries must be backed up once and the stored value left untouched");
+    corrupt.check(!uiDriver(m).hidden("historyReadOnlyBanner") && items.every((it) => it.querySelector(".history-delete-btn").disabled), "dropped entries did not make history read-only");
+    const valid = await make(T_MAIN, { storage: { [HISTORY_KEY]: JSON.stringify([good]) } });
+    corrupt.check(valid.storage.getItem(`${HISTORY_KEY}_bak`) === null && uiDriver(valid).hidden("historyReadOnlyBanner"), "a valid array must not be backed up or read-only");
     const proto = await make(T_MAIN, { storage: { [HISTORY_KEY]: '[{"__proto__":{"polluted":1},"id":1}]' } });
-    corrupt.check(({}).polluted === undefined && uiDriver(proto).text("historyCount") === "(0 / 500)", "prototype pollution through stored history");
+    corrupt.check(({}).polluted === undefined && uiDriver(proto).text("historyCount") === "(0 / 500)" && !uiDriver(proto).hidden("historyReadOnlyBanner"), "prototype pollution through stored history");
   });
 
   const blocked = slice.criterion("storage-blocked", "with localStorage throwing (blocked site data) the page boots, calculates and keeps history for the session without errors");
@@ -3983,6 +5100,7 @@ async function runSliceC(slice, ctx) {
   const sb = await make(T_MAIN);
   const snaps = await runUiSuite(slice, sb, ctx);
   await runClockSuite(slice, make, ctx);
+  await runV110Suite(slice, ctx, make, "desktop");
 
   const ipc = slice.criterion("ipc-routing", "every invoke is a registered Tauri command, every engine command reached the Rust bridge as {req}, and nothing fell back to JS math");
   await guard(ipc, "ipc", async () => {
@@ -3991,6 +5109,7 @@ async function runSliceC(slice, ctx) {
     ipc.check(st.calls.every((c) => DESKTOP_COMMANDS.has(c)), "unregistered command");
     ipc.check(st.bridgeCalls > 20, () => `only ${st.bridgeCalls} engine calls`);
     ipc.check(st.calls.includes("check_for_updates"), "startup update check not requested via IPC");
+    ipc.check(st.calls.includes("countdown_load") && st.calls.includes("history_state"), "the launch did not ask for the saved countdown and the history state over IPC");
   });
 
   const cross = slice.criterion("cross-surface-text", "for the same inputs and virtual clock, the desktop (Rust over IPC) and mobile (JS mirror) cards render identical result, live and trace text");
@@ -4321,7 +5440,216 @@ function workflowCriterion(crit, files, check, mutants) {
   return real;
 }
 
-function runSliceD(slice, ctx) {
+// Same as workflowCriterion, over a {name: text} map of any files.
+function textCriterion(crit, files, check, mutants) {
+  const real = check(files);
+  crit.check(real.problems.length === 0, () => real.problems.slice(0, 6).join(" | "));
+  let caught = 0;
+  for (const [label, name, from, to] of mutants) {
+    const text = files[name];
+    const planted = typeof text === "string" ? text.replace(from, to) : text;
+    if (!crit.check(typeof text === "string" && planted !== text, `planted mutant "${label}" did not apply to ${name}`)) continue;
+    if (crit.check(check({ ...files, [name]: planted }).problems.length > 0, `planted mutant "${label}" in ${name} was not detected`)) caught++;
+  }
+  crit.note(`planted mutants detected: ${caught}/${mutants.length}`);
+  return real;
+}
+
+// --- Plan A4: the app and the engine are versioned separately. The app
+// version is locked across every app file; the engine version (date-core,
+// ENGINE_VERSION, the golden header, the mobile marker) stays put.
+function readHead(rel, bytes = 4096) {
+  const fd = openSync(join(ROOT, rel), "r");
+  try {
+    const buf = Buffer.alloc(bytes);
+    const n = readSync(fd, buf, 0, bytes, 0);
+    return buf.subarray(0, n).toString("utf8");
+  } finally {
+    closeSync(fd);
+  }
+}
+function versionSplitProblems(f) {
+  const problems = [];
+  const want = (ok, msg) => {
+    if (!ok) problems.push(msg);
+  };
+  let conf = null;
+  try {
+    conf = JSON.parse(f.tauriConf);
+  } catch {
+    conf = null;
+  }
+  const pkgVer = (toml) => /^\[package\][^[]*?^version\s*=\s*"([^"]+)"/m.exec(toml)?.[1];
+  const lockVer = (name) => new RegExp(`\\[\\[package\\]\\]\\nname = "${name}"\\nversion = "([^"]+)"`).exec(f.cargoLock)?.[1];
+  want(conf?.version === APP_VERSION, `tauri.conf.json version ${conf?.version} != app ${APP_VERSION}`);
+  want(pkgVer(f.appCargo) === APP_VERSION, `src-tauri/Cargo.toml version ${pkgVer(f.appCargo)} != app ${APP_VERSION}`);
+  want(lockVer("date-calculator-tool") === APP_VERSION, `Cargo.lock date-calculator-tool ${lockVer("date-calculator-tool")} != app ${APP_VERSION}`);
+  want(/const APP_VERSION = "([^"]+)";/.exec(f.mobileHtml)?.[1] === APP_VERSION, "mobile APP_VERSION is not the app version");
+  want(f.mobileHtml.includes(`<span id="appVersion">Mobile &amp; Web v${APP_VERSION}</span>`), "mobile footer is not the app version");
+  want(/const CACHE_NAME = "date-tool-v([^"]+?)-mobile-\d+";/.exec(f.swJs)?.[1] === APP_VERSION, "sw.js CACHE_NAME is not the app version");
+  want(f.uiHtml.includes(`<span id="appVersion">Desktop v${APP_VERSION}</span>`), "desktop footer is not the app version");
+  want(pkgVer(f.engineCargo) === ENGINE_VERSION, `crates/date-core/Cargo.toml version ${pkgVer(f.engineCargo)} != engine ${ENGINE_VERSION}`);
+  want(lockVer("date-core") === ENGINE_VERSION, `Cargo.lock date-core ${lockVer("date-core")} != engine ${ENGINE_VERSION}`);
+  want(/pub const ENGINE_VERSION: &str = "([^"]+)";/.exec(f.libRs)?.[1] === ENGINE_VERSION, "lib.rs ENGINE_VERSION is not the engine version");
+  want(/"engine":"([^"]+)"/.exec(f.goldenHead)?.[1] === ENGINE_VERSION, "golden.json header engine is not the engine version");
+  want(f.mobileHtml.split(`/* date-core:begin v${ENGINE_VERSION} */`).length === 2, "the mobile engine marker does not name the engine version exactly once");
+  want(/const EXPECTED_ENGINE_VERSION: &str = "([^"]+)";/.exec(f.commandsRs)?.[1] === ENGINE_VERSION, "commands.rs EXPECTED_ENGINE_VERSION is not the engine version");
+  want(/assert_eq!\(date_core::ENGINE_VERSION, EXPECTED_ENGINE_VERSION\)/.test(f.commandsRs), "commands.rs does not assert ENGINE_VERSION == EXPECTED_ENGINE_VERSION");
+  want(!/assert_eq!\(\s*date_core::ENGINE_VERSION\s*,\s*env!\("CARGO_PKG_VERSION"\)\s*\)/.test(f.commandsRs), "commands.rs still locks the engine to the app's CARGO_PKG_VERSION");
+  return { problems };
+}
+
+// --- Plan A1: out-of-month cells stay readable (WCAG AA 4.5:1); only
+// disabled (out-of-range) cells keep the dim look.
+function hexRgb(hex) {
+  const h = hex.replace("#", "");
+  const full = h.length === 3 ? h.split("").map((x) => x + x).join("") : h;
+  return [0, 2, 4].map((i) => parseInt(full.slice(i, i + 2), 16));
+}
+function relLuminance(rgb) {
+  const [r, g, b] = rgb.map((v) => {
+    const s = v / 255;
+    return s <= 0.03928 ? s / 12.92 : ((s + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+function contrastRatio(a, b) {
+  const [x, y] = [relLuminance(a), relLuminance(b)].sort((p, q) => q - p);
+  return (x + 0.05) / (y + 0.05);
+}
+function cssRules(css) {
+  return [...css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ selectors: m[1].split(",").map((s) => s.trim()), body: m[2] }));
+}
+function outCellProblems(files) {
+  const problems = [];
+  for (const [name, css] of Object.entries(files)) {
+    const rules = cssRules(css);
+    const out = rules.find((r) => r.selectors.includes(".mini-cal-cell.out"));
+    if (!out) {
+      problems.push(`${name}: no .mini-cal-cell.out rule`);
+      continue;
+    }
+    const color = /(?:^|;|\s)color\s*:\s*(#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?)\b/.exec(out.body)?.[1];
+    if (!color) {
+      problems.push(`${name}: .mini-cal-cell.out sets no hex color`);
+      continue;
+    }
+    const section = rules.find((r) => r.selectors.includes(".calc-section"))?.body.match(/background\s*:\s*(#[0-9a-fA-F]{6})/)?.[1] || "#161822";
+    const restored = rules.find((r) => r.selectors.includes(".calc-section.card-restored"))?.body.match(/background\s*:\s*(#[0-9a-fA-F]{6})/)?.[1] || "#1b202d";
+    const backs = [["page #0E0F12", hexRgb("#0E0F12")], [`card ${section}`, hexRgb(section)], [`restored card ${restored}`, hexRgb(restored)]];
+    const tint = rules.find((r) => r.selectors.includes(".mini-cal-cell.out.in-range"))?.body.match(/rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*([\d.]+)\s*\)/);
+    if (tint) {
+      const a = Number(tint[4]);
+      const base = hexRgb(section);
+      backs.push([`in-range tint on ${section}`, [1, 2, 3].map((i, k) => Math.round(Number(tint[i]) * a + base[k] * (1 - a)))]);
+    }
+    for (const [label, bg] of backs) {
+      const ratio = contrastRatio(hexRgb(color), bg);
+      if (ratio < 4.5) problems.push(`${name}: out-of-month ${color} on ${label} is ${ratio.toFixed(2)}:1 (< 4.5:1)`);
+    }
+    for (const r of rules) {
+      if (r.selectors.some((s) => /\.out(?![\w-])/.test(s)) && /(?:^|;|\s)opacity\s*:/.test(r.body)) problems.push(`${name}: ${r.selectors.join(", ")} dims out-of-month cells with opacity`);
+    }
+    const dim = rules.find((r) => r.selectors.includes(".mini-cal-cell:disabled"));
+    if (!dim || !/opacity\s*:\s*0?\.25\b/.test(dim.body)) problems.push(`${name}: disabled cells lost the dim look`);
+  }
+  return { problems };
+}
+
+// --- Phone first: on a coarse pointer every v1.1.0 control is at least
+// 44 px tall (day cells, the pick toggle, the month/Today buttons, Forget,
+// and the history banner's retry / start-a-new-history buttons).
+const TOUCH_SELECTORS = [".mini-cal-cell", ".cal-pick-opt", ".mini-cal-nav", ".link-btn", ".calc-btn", ".reset-btn"];
+function mediaBlock(css, query) {
+  const start = css.indexOf(`@media ${query} {`);
+  if (start < 0) return null;
+  let depth = 0;
+  for (let i = css.indexOf("{", start); i < css.length; i++) {
+    if (css[i] === "{") depth++;
+    else if (css[i] === "}" && --depth === 0) return css.slice(css.indexOf("{", start) + 1, i);
+  }
+  return null;
+}
+function touchTargetProblems(files) {
+  const problems = [];
+  for (const [name, css] of Object.entries(files)) {
+    const block = mediaBlock(css.replace(/\/\*[\s\S]*?\*\//g, ""), "(pointer: coarse)");
+    if (block === null) {
+      problems.push(`${name}: no @media (pointer: coarse) block`);
+      continue;
+    }
+    const rules = cssRules(block);
+    for (const sel of TOUCH_SELECTORS) {
+      const ok = rules.some((r) => r.selectors.includes(sel) && /min-height\s*:\s*(?:4[4-9]|[5-9]\d)px/.test(r.body));
+      if (!ok) problems.push(`${name}: ${sel} has no min-height of at least 44px on a coarse pointer`);
+    }
+  }
+  return { problems };
+}
+
+// --- Plan A6 slice D: the v1.1.0 probes must catch planted page mutants.
+function mutantArtifacts(art, surface, from, to) {
+  if (surface === "mobile") {
+    const script = art.mobileHtml.match(/<script>([\s\S]*?)<\/script>/)[1];
+    const text = script.replace(from, to);
+    return text === script ? null : { ...art, mobileScript: new vm.Script(text, { filename: "mobile/index.html:inline-script (mutant)" }) };
+  }
+  const text = art.uiMain.replace(from, to);
+  return text === art.uiMain ? null : { ...art, desktopScript: new vm.Script(text, { filename: "ui/main.js (mutant)" }) };
+}
+const BOTH = ["mobile", "desktop"];
+const UI_MUTANTS = [
+  ["calendar cells as <span>", BOTH, 'const el = document.createElement("button");', 'const el = document.createElement("span");', probeCalendarClickInfo],
+  ["every cell a tab stop", BOTH, 'n.setAttribute("tabindex", n === node ? "0" : "-1");', 'n.setAttribute("tabindex", "0");', probeCalendarKeyboard],
+  ["launch restore call deleted", BOTH, /(await refreshCalendarInfo\(\);[\s\S]*?)await restoreSavedCountdown\(\);/, "$1", probeCountdownRestoreFuture],
+  ["countdown saved on input", BOTH, 'addEventListener("change", () => persistCountdown());', 'addEventListener("input", () => persistCountdown());', probeCountdownNoWriteOnTick],
+  ["an empty field clears the record", BOTH, "if (!pair) return cdWriteChain;", "if (!pair) return forgetCountdown();", probeCountdownEmptySegment],
+  ["savedAtMs used as the finished signal", BOTH, "cdStored.finishedSeenAtMs === null;", "cdStored.savedAtMs < Date.now();", probeCountdownFinishedOpenThenClosed],
+  ["finishedSeenAtMs written on every tick", BOTH, "if (cdStoreBlocked || !cdStored || cdStored.finishedSeenAtMs !== null) return;", "if (cdStoreBlocked || !cdStored) return;", probeCountdownNoWriteOnTick],
+  ["Forget does not clear the store", BOTH, /return queueCountdownWrite\(\(\) => (?:invoke\("countdown_clear"\)|countdownClear\(\))\)\.then\(/, "return cdWriteChain.then(", probeCountdownForget],
+  ["Business Days pick never toggles", BOTH, 'setBizPickTarget(target === "end" ? "start" : "end");', "setBizPickTarget(target);", probeBizRangePick],
+  ["unreadable history loads as empty and writable", ["mobile"], "historyReadOnlyState = readOnly;", "historyReadOnlyState = null;", probeHistoryReadOnly],
+  ["read-only banner never shown", BOTH, 'banner?.classList.toggle("hidden", !historyReadOnly);', 'banner?.classList.toggle("hidden", true);', probeHistoryReadOnly],
+  ["other-tab countdown sync removed", ["mobile"], /\n\s*syncCountdownFromStorage\(\);\n/, "\n", probeCountdownStorageEvent],
+  ["restored chip kept on every tick", BOTH, 'else if (restoreRender) phase = "restored";', 'else if (restoredNow) phase = "restored";', probeCountdownRestoreFuture],
+  ["saved note shown even when the save fails", BOTH, /if \(cdStored === state\) \{\n\s*cdStored = previous\.stored;\n\s*cdLoadStatus = previous\.status;\n\s*\}\n\s*onCountdownWriteFailed\(err\);/, "renderCountdownNote();", probeCountdownBadRecords],
+  ["clear all forgets the saved countdown", BOTH, "resetCard(key, { forget: false })", "resetCard(key)", probeCountdownReset],
+  ["new-history reset drops a value that is not backed up", ["mobile"], "if (kept !== raw) {", "if (kept === null) {", probeHistoryReadOnly]
+];
+
+async function runUiMutants(crit, ctx) {
+  if (!ctx.defaultCalendar) {
+    crit.fail("the Rust bridge is needed for the probes' expected values");
+    return;
+  }
+  let caught = 0;
+  let planted = 0;
+  const seen = [];
+  for (const [label, surfaces, from, to, probe] of UI_MUTANTS) {
+    for (const surface of surfaces) {
+      const art = mutantArtifacts(ctx.art, surface, from, to);
+      if (!crit.check(art !== null, `planted mutant "${label}" did not apply to the ${surface} page`)) continue;
+      planted++;
+      const make = surface === "mobile"
+        ? (startMs, extra = {}) => createMobileSandbox(art, { startMs, seed: ctx.opts.seed, ...extra })
+        : (startMs, extra = {}) => createDesktopSandbox(art, ctx.bridge, { startMs, seed: ctx.opts.seed, ...extra });
+      const col = new Collector();
+      try {
+        await probe({ make, ctx, surface }, col);
+      } catch (err) {
+        col.fail(`threw ${err && err.message}`);
+      }
+      if (crit.check(col.problems.length > 0, `planted mutant "${label}" on ${surface} was not detected by ${probe.name}`)) {
+        caught++;
+        seen.push(`${surface} "${label}" → ${probe.name}: ${excerpt(col.problems[0], 100)}`);
+      }
+    }
+  }
+  crit.note(`planted page mutants detected: ${caught}/${planted}`);
+  crit.note(seen.join(" ; "));
+}
+
+async function runSliceD(slice, ctx) {
   const cm = slice.criterion("check-mobile", "scripts/check-mobile.mjs passes: engine Date/Intl/clock bans, CSP hashes and directives (no frame-ancestors), LF/no BOM, no DOM/eval sinks, no .style in the mobile script, local-only mobile markup, manifest/icons/precache, one version everywhere, golden + vectors + boundary replay in three time zones");
   const dir = mkdtempSync(join(tmpdir(), "date-tool-safety-"));
   try {
@@ -4367,14 +5695,19 @@ function runSliceD(slice, ctx) {
     desk.check(!/\b(?:fetch|XMLHttpRequest|WebSocket|EventSource)\s*\(/.test(main.replace(/\/\/.*$/gm, "")), "ui/main.js does network I/O directly");
   }
 
-  const cmds = slice.criterion("command-allowlist", "every invoke(\"…\") and engine(\"…\") name in ui/main.js is a command registered in src-tauri/src/main.rs, engine() only names the nine date-core ops, and the mobile script fetches only the GitHub Releases API");
+  const cmds = slice.criterion("command-allowlist", "every invoke(\"…\") and engine(\"…\") name in ui/main.js is a command registered in src-tauri/src/main.rs, engine() only names the nine date-core ops, the v1.1.0 history_state/retry/reset and countdown_load/save/clear commands are registered, invoked and defined as #[tauri::command], and the mobile script fetches only the GitHub Releases API");
   {
     const main = readText("ui/main.js");
     const rs = readText("src-tauri/src/main.rs");
+    const commandsRs = readText("src-tauri/src/commands.rs");
     const registered = new Set([...(rs.match(/generate_handler!\[([\s\S]*?)\]/)?.[1] ?? "").matchAll(/commands::(\w+)/g)].map((m) => m[1]));
     const invoked = new Set([...main.matchAll(/\binvoke\(\s*"([\w]+)"/g)].map((m) => m[1]));
     const engined = new Set([...main.matchAll(/\bengine\(\s*"([\w]+)"/g)].map((m) => m[1]));
-    cmds.check(registered.size >= 20, () => `only ${registered.size} registered commands parsed`);
+    cmds.check(registered.size >= 26, () => `only ${registered.size} registered commands parsed`);
+    for (const c of NEW_COMMANDS_V110) {
+      cmds.check(registered.has(c) && invoked.has(c), () => `v1.1.0 command ${c}: registered=${registered.has(c)} invoked=${invoked.has(c)}`);
+      cmds.check(new RegExp(`#\\[tauri::command\\]\\s*pub fn ${c}\\(`).test(commandsRs), () => `commands.rs has no #[tauri::command] pub fn ${c}`);
+    }
     for (const c of invoked) cmds.check(registered.has(c) && DESKTOP_COMMANDS.has(c), () => `invoke("${c}") is not registered`);
     for (const c of engined) cmds.check(ENGINE_OPS.includes(c) && registered.has(c), () => `engine("${c}") is not an engine command`);
     for (const c of registered) cmds.check(DESKTOP_COMMANDS.has(c), () => `registered command ${c} is unknown to this evaluation`);
@@ -4448,6 +5781,64 @@ function runSliceD(slice, ctx) {
     gate.note(`gated release jobs in build.yml: ${r.gated}`);
   }
 
+  const vsplit = slice.criterion("versions-app-engine-split", `the app version ${APP_VERSION} is locked across tauri.conf.json, src-tauri/Cargo.toml and its Cargo.lock entry, mobile APP_VERSION, the sw.js CACHE_NAME and both footers, while the engine stays ${ENGINE_VERSION} in date-core's Cargo.toml and Cargo.lock entry, ENGINE_VERSION, the golden.json header, the mobile marker and commands.rs EXPECTED_ENGINE_VERSION (planted lockstep and missed-bump mutants are detected)`);
+  await guard(vsplit, "version split", async () => {
+    const files = {
+      tauriConf: readText("src-tauri/tauri.conf.json"),
+      appCargo: readText("src-tauri/Cargo.toml"),
+      engineCargo: readText("crates/date-core/Cargo.toml"),
+      cargoLock: readText("Cargo.lock").replace(/\r\n/g, "\n"),
+      libRs: readText("crates/date-core/src/lib.rs"),
+      commandsRs: readText("src-tauri/src/commands.rs"),
+      goldenHead: readHead("crates/date-core/tests/fixtures/golden.json"),
+      mobileHtml: ctx.art.mobileHtml,
+      swJs: readText("mobile/sw.js"),
+      uiHtml: ctx.art.uiHtml
+    };
+    vsplit.check(APP_VERSION !== ENGINE_VERSION, "app and engine versions are equal, so the split mutants prove nothing");
+    textCriterion(vsplit, files, versionSplitProblems, [
+      ["date-core bumped with the app", "engineCargo", /^version = "[^"]+"/m, `version = "${APP_VERSION}"`],
+      ["golden.json engine set to the app version", "goldenHead", `"engine":"${ENGINE_VERSION}"`, `"engine":"${APP_VERSION}"`],
+      ["mobile engine marker bumped", "mobileHtml", BEGIN_MARKER, `/* date-core:begin v${APP_VERSION} */`],
+      ["engine pinned to CARGO_PKG_VERSION again", "commandsRs", "assert_eq!(date_core::ENGINE_VERSION, EXPECTED_ENGINE_VERSION);", 'assert_eq!(date_core::ENGINE_VERSION, env!("CARGO_PKG_VERSION"));'],
+      ["tauri.conf.json not bumped", "tauriConf", `"version": "${APP_VERSION}"`, `"version": "${ENGINE_VERSION}"`],
+      ["Cargo.lock app entry not bumped", "cargoLock", `name = "date-calculator-tool"\nversion = "${APP_VERSION}"`, `name = "date-calculator-tool"\nversion = "${ENGINE_VERSION}"`],
+      ["mobile APP_VERSION not bumped", "mobileHtml", `const APP_VERSION = "${APP_VERSION}";`, `const APP_VERSION = "${ENGINE_VERSION}";`],
+      ["sw.js CACHE_NAME not bumped", "swJs", `date-tool-v${APP_VERSION}-`, `date-tool-v${ENGINE_VERSION}-`],
+      ["desktop footer not bumped", "uiHtml", `Desktop v${APP_VERSION}</span>`, `Desktop v${ENGINE_VERSION}</span>`]
+    ]);
+  });
+
+  const contrast = slice.criterion("css-contrast-out-cells", "the out-of-month calendar text (.mini-cal-cell.out) in ui/styles.css and the mobile inline style has at least 4.5:1 contrast on the page, the card, the restored card and the in-range tint, no .out rule dims it with opacity, and only disabled cells keep opacity .25 (planted old-colour and opacity mutants are detected)");
+  await guard(contrast, "out-cell contrast", async () => {
+    const mobileCss = ctx.art.mobileHtml.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? "";
+    const files = { "ui/styles.css": readText("ui/styles.css"), "mobile/index.html <style>": mobileCss };
+    const real = textCriterion(contrast, files, outCellProblems, [
+      ["desktop v1.0.0 dim colour", "ui/styles.css", /(\.mini-cal-cell\.out \{[^}]*?color:\s*)#[0-9a-fA-F]{3,6}/, "$1#454c5e"],
+      ["mobile v1.0.0 dim colour", "mobile/index.html <style>", /(\.mini-cal-cell\.out \{[^}]*?color:\s*)#[0-9a-fA-F]{3,6}/, "$1#454c5e"],
+      ["desktop out cells dimmed with opacity", "ui/styles.css", ".mini-cal-cell.out {", ".mini-cal-cell.out {\n  opacity: 0.5;"],
+      ["mobile disabled cells no longer dim", "mobile/index.html <style>", /(\.mini-cal-cell:disabled \{[^}]*?)opacity:\s*0?\.25;/, "$1opacity: 1;"]
+    ]);
+    for (const [name, css] of Object.entries(files)) {
+      const out = cssRules(css).find((r) => r.selectors.includes(".mini-cal-cell.out"));
+      const color = out && /color\s*:\s*(#[0-9a-fA-F]{3,6})/.exec(out.body)?.[1];
+      if (color) contrast.note(`${name}: .out ${color} is ${contrastRatio(hexRgb(color), hexRgb("#0E0F12")).toFixed(2)}:1 on #0E0F12, ${contrastRatio(hexRgb(color), hexRgb("#161822")).toFixed(2)}:1 on #161822`);
+    }
+    return real;
+  });
+
+  const touch = slice.criterion("touch-targets-44px", `phone first: in ui/styles.css and the mobile inline style, @media (pointer: coarse) gives ${TOUCH_SELECTORS.join(", ")} a min-height of at least 44px (planted shrink mutants are detected)`);
+  await guard(touch, "touch targets", async () => {
+    const mobileCss = ctx.art.mobileHtml.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? "";
+    textCriterion(touch, { "ui/styles.css": readText("ui/styles.css"), "mobile/index.html <style>": mobileCss }, touchTargetProblems, [
+      ["mobile pick toggle shrunk", "mobile/index.html <style>", /(?<=\.cal-pick-opt \{\s*min-height:\s*)44px/, "30px"],
+      ["desktop day cells shrunk", "ui/styles.css", /(?<=\.mini-cal-cell,[^{]*\{\s*min-height:\s*)44px/, "32px"]
+    ]);
+  });
+
+  const mutants = slice.criterion("ui-mutant-proofs", "the v1.1.0 calendar, countdown and history probes of slices B and C each detect a planted mutant of the page they guard: span cells, every cell a tab stop, the launch restore call deleted, save on input, clear on an empty field, savedAtMs as the finished signal, a per-tick write, a Forget that keeps the record, a pick that never toggles, unreadable history loaded as empty and writable, the read-only banner never shown, the other-tab sync removed, the restored chip kept on every tick, the saved note shown after a failed save, clear all forgetting the saved countdown, and a new-history reset that drops a value not in any backup");
+  await guard(mutants, "ui mutants", () => runUiMutants(mutants, ctx));
+
   const git = slice.criterion("clean-git", "with --require-clean-git, the git working tree has no uncommitted or untracked changes (recorded but not gating without the flag)");
   {
     const meta = ctx.git;
@@ -4474,7 +5865,7 @@ async function main() {
     schemaVersion: CARD_SCHEMA_VERSION,
     evalVersion: EVAL_VERSION,
     generatedAt: opts.stamp || new Date().toISOString(),
-    app: { name: APP_NAME, version: APP_VERSION, repository: "https://github.com/CipherVaults/Date-Calculator-Tool" },
+    app: { name: APP_NAME, version: APP_VERSION, engineVersion: ENGINE_VERSION, repository: "https://github.com/CipherVaults/Date-Calculator-Tool" },
     run: {
       seed: opts.seed,
       randomCases: opts.cases,
@@ -4525,8 +5916,8 @@ async function main() {
   const slices = [
     [new Slice("A", "Engine parity", "Rust eval_bridge vs the mobile engine slice (byte-identical) vs an independent JS oracle, over seeded random and adversarial requests"), runSliceA, true],
     [new Slice("B", "Mobile UI behaviour", "mobile/index.html in a mini-DOM with a virtual clock (TZ America/New_York), in-memory localStorage and stubbed fetch/clipboard/service worker"), runSliceB, true],
-    [new Slice("C", "Desktop UI behaviour", "ui/index.html + ui/main.js in the mini-DOM with window.__TAURI__.core.invoke routed to the Rust bridge and in-memory history/settings"), runSliceC, true],
-    [new Slice("D", "Static hygiene", "check-mobile.mjs, desktop CSP and markup, Tauri command allowlist, holiday-id parity, .github/workflows hygiene (SHA pins, persist-credentials, identical inline node blocks, release gate)"), runSliceD, false]
+    [new Slice("C", "Desktop UI behaviour", "ui/index.html + ui/main.js in the mini-DOM with window.__TAURI__.core.invoke routed to the Rust bridge and in-memory history/settings/countdown files"), runSliceC, true],
+    [new Slice("D", "Static hygiene", "check-mobile.mjs, desktop CSP and markup, Tauri command allowlist, holiday-id parity, .github/workflows hygiene (SHA pins, persist-credentials, identical inline node blocks, release gate), app/engine version split, calendar contrast and touch targets, planted page mutants"), runSliceD, false]
   ];
   if (bridgeOk) ctx.defaultCalendar = (await bridge.result("validate_calendar", { calendar: {} })).calendar;
   for (const [slice, run, needsBridge] of slices) {

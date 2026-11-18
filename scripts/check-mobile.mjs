@@ -13,8 +13,11 @@
 //    insertAdjacentHTML/document.write/eval/Function sinks in ui/main.js, the
 //    mobile script or sw.js; no .style in the mobile script; local-only
 //    resources in the mobile markup; manifest fields, icons and sw precache
-//    files exist; one version across tauri.conf.json, both Cargo.toml files,
-//    mobile APP_VERSION, the sw CACHE_NAME and both footers/About pills.
+//    files exist; the app version agrees across tauri.conf.json,
+//    src-tauri/Cargo.toml, mobile APP_VERSION, the sw CACHE_NAME and both
+//    footers/About pills; the engine version agrees across date-core's
+//    Cargo.toml, ENGINE_VERSION, the golden header and the marker, and the
+//    engine slice bytes match their pinned SHA-256.
 // 5. In one child process per time zone (UTC, America/St_Johns,
 //    Pacific/Kiritimati), runs the slice in node:vm with `Date` and `Intl`
 //    deleted, replays every case of crates/date-core/tests/fixtures/golden.json
@@ -38,6 +41,12 @@ const VECTORS = join(ROOT, "crates", "date-core", "tests", "fixtures", "vectors.
 const BEGIN_MARKER = "/* date-core:begin v1.0.0 */";
 const END_MARKER = "/* date-core:end */";
 const ENGINE_VERSION = "1.0.0";
+// SHA-256 (hex) of the exact bytes between the markers for engine v1.0.0
+// (103,653 bytes, identical to the v1.0.0 release tag). The app version can
+// move on while the engine stays 1.0.0, so any edit to the slice must come
+// with an intentional engine bump: new ENGINE_VERSION, marker, golden header
+// and this pin, all in one commit.
+const ENGINE_SLICE_SHA256 = "29203081a922c9f77248127123914de6ac2e8173be6ebe7c508da73481b41945";
 const EXPECTED_GOLDEN_CASES = 13965;
 const TIME_ZONES = ["UTC", "America/St_Johns", "Pacific/Kiritimati"];
 
@@ -427,15 +436,20 @@ function packageVersion(cargoToml) {
   return m ? m[1] : null;
 }
 
-// One version everywhere (AGENTS.md "Version must match").
+// Two version lines (AGENTS.md "Version"): the app version from
+// tauri.conf.json must match src-tauri, mobile APP_VERSION, the sw cache name
+// and the footers/About pills; the engine version from date-core's Cargo.toml
+// must match ENGINE_VERSION in lib.rs, the golden header, the mobile marker
+// and this gate's pin, and the engine slice bytes must hash to the pin.
 function versionChecks(html, mobileScript, swCode) {
   const problems = [];
   const found = [];
   const add = (where, v) => found.push([where, v ?? "(not found)"]);
+  const semver = /^\d+\.\d+\.\d+$/;
   const tauri = JSON.parse(readFileSync(join(ROOT, "src-tauri", "tauri.conf.json"), "utf8"));
+  if (!semver.test(String(tauri.version))) problems.push(`tauri.conf.json version ${JSON.stringify(tauri.version)} must be x.y.z`);
   add("src-tauri/tauri.conf.json", tauri.version);
   add("src-tauri/Cargo.toml", packageVersion(readFileSync(join(ROOT, "src-tauri", "Cargo.toml"), "utf8")));
-  add("crates/date-core/Cargo.toml", packageVersion(readFileSync(join(ROOT, "crates", "date-core", "Cargo.toml"), "utf8")));
   add("mobile APP_VERSION", (mobileScript.match(/\bconst APP_VERSION = "([^"]+)";/) || [])[1]);
   const cache = (swCode.match(/\bconst CACHE_NAME = "([^"]+)";/) || [])[1];
   const cacheMatch = cache && cache.match(/^date-tool-v(\d+\.\d+\.\d+)-mobile-\d+$/);
@@ -448,9 +462,40 @@ function versionChecks(html, mobileScript, swCode) {
   add("ui About pill", (desktop.match(/id="aboutVersionPill">Desktop v([^ <]+) /) || [])[1]);
   const want = found[0][1];
   for (const [where, v] of found) {
-    if (v !== want) problems.push(`version mismatch: ${where} has ${v}, tauri.conf.json has ${want}`);
+    if (v !== want) problems.push(`app version mismatch: ${where} has ${v}, tauri.conf.json has ${want}`);
   }
-  return { problems, version: want, places: found.length };
+
+  const engine = [];
+  const addEngine = (where, v) => engine.push([where, v ?? "(not found)"]);
+  const engineVersion = packageVersion(readFileSync(join(ROOT, "crates", "date-core", "Cargo.toml"), "utf8"));
+  addEngine("crates/date-core/Cargo.toml", engineVersion);
+  addEngine("check-mobile ENGINE_VERSION pin", ENGINE_VERSION);
+  addEngine(
+    "date-core ENGINE_VERSION (lib.rs)",
+    (readFileSync(join(ROOT, "crates", "date-core", "src", "lib.rs"), "utf8").match(/^pub const ENGINE_VERSION: &str = "([^"]+)";/m) || [])[1],
+  );
+  addEngine("golden.json header engine", (readFileSync(GOLDEN, "utf8").slice(0, 512).match(/"engine":"([^"]+)"/) || [])[1]);
+  const markers = [...html.matchAll(/\/\* date-core:begin v(\S+) \*\//g)].map((m) => m[1]);
+  if (markers.length !== 1) problems.push(`expected exactly one date-core begin marker, found ${markers.length}`);
+  addEngine("mobile date-core marker", markers[0]);
+  const engineWant = engine[0][1];
+  if (!semver.test(String(engineWant))) problems.push(`date-core Cargo.toml version ${JSON.stringify(engineWant)} must be x.y.z`);
+  for (const [where, v] of engine) {
+    if (v !== engineWant) problems.push(`engine version mismatch: ${where} has ${v}, date-core Cargo.toml has ${engineWant}`);
+  }
+  let sliceHash = null;
+  try {
+    sliceHash = createHash("sha256").update(extractSlice(html), "utf8").digest("hex");
+  } catch (e) {
+    problems.push(`engine slice: ${e.message}`);
+  }
+  if (sliceHash !== null && sliceHash !== ENGINE_SLICE_SHA256) {
+    problems.push(
+      `engine slice SHA-256 ${sliceHash} != pinned ${ENGINE_SLICE_SHA256} for engine v${ENGINE_VERSION}; ` +
+        "the mobile engine changed without an engine version bump",
+    );
+  }
+  return { problems, version: want, engineVersion: engineWant, places: found.length + engine.length + 1 };
 }
 
 function hygieneChecks(html) {
@@ -464,7 +509,7 @@ function hygieneChecks(html) {
     ["no DOM/eval sinks in ui/main.js, the mobile script and sw.js; no .style in the mobile script", sinkChecks(mobileScript)],
     ["mobile markup loads only local resources; no style/on* attributes", markupChecks(html, style)],
     ["manifest fields, icons (PNG sizes) and sw precache files exist", manifestChecks(html, swCode)],
-    [`versions agree (${versions.version} in ${versions.places} places)`, versions.problems],
+    [`versions agree (app ${versions.version}, engine ${versions.engineVersion}, ${versions.places} checks, engine slice hash pinned)`, versions.problems],
   ];
 }
 

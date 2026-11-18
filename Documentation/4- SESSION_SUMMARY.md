@@ -1,6 +1,6 @@
 # Session Summary
 
-Factual record of the v1.0.0 build. Sources: `git log` on `dev` and the [Execution & Coding Ledger](pbs/EXECUTION_AND_CODING_LEDGER.md) (evidence IDs E-01 to E-13). Milestones are defined in [3- ROADMAP.md](3-%20ROADMAP.md).
+Factual record of the v1.0.0 build. Sources: `git log` on `dev` and the [Execution & Coding Ledger](pbs/EXECUTION_AND_CODING_LEDGER.md) (evidence IDs E-01 to E-14). Milestones are defined in [3- ROADMAP.md](3-%20ROADMAP.md).
 
 ---
 
@@ -304,10 +304,10 @@ A Rust engine and its JavaScript copy can only be proven identical when all text
 - Confirm that leaving the Egypt preset should keep the weekend unchanged (from M5).
 - Accept v1.0.0. A published release is not owner acceptance.
 
-### Docs on `main` (owner yes required)
+### Docs on `main`
 
-- The doc updates made on `dev` after the merge (README status and these records) are not on `main` until another PR `dev` → `main`, which needs the owner's explicit yes.
-- A docs-only merge is safe: the release job keeps `v1.0.0` unchanged ("preserving immutable tag and assets"), and Pages redeploys the same `mobile/` bytes.
+- On the owner's "Yes, merge docs", the doc updates made on `dev` after the release reached `main` through PR #2, merged as `0c3d6e0` (E-14).
+- A docs-only merge is safe: the release job keeps `v1.0.0` unchanged ("preserving immutable tag and assets"), and Pages does not run, because `pages.yml` only triggers on changes to `mobile/**` or its own file, so the live site is untouched.
 
 ### Not run yet
 

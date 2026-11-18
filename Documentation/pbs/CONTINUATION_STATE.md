@@ -5,7 +5,9 @@
 - Record type: recoverable working checkpoint (PBS v1.1).
 - Goal: build Date Calculator Tool v1.0.0 per the approved Plan (milestones M0–M9; see [Roadmap](../3-%20ROADMAP.md)).
 - Recorded at: 2026-11-17 · writer: Claude Code (Opus 5.5) · next integrating owner: same session / any successor executor.
-- Mission state: **M0–M9 done. PR #1 CI green on Ubuntu + Windows after the checksum fix `9c06553` (E-12); merged to `main` as `5a512a3`; Release v1.0.0 published and Pages live 2026-11-17 (E-13). Waiting on owner checks and owner acceptance.**
+- Mission state (2026-11-18, newest): **Date v1.1.0 implemented and verified locally (Ledger E-15, `c66843a`)**. Next: green CI on `dev`, a PR `dev` → `main`, and the owner's explicit yes to merge (publishes v1.1.0). After that: Part B M0 (needs the owner's yes to create the new repo).
+- Mission state (2026-11-17): **Approved Portable Calculator Plan, Part A (Date v1.1.0) in progress on `dev`**. See [the plan](../specs/5-%20PORTABLE_CALCULATOR_PLAN.md) and the v1.1.0 milestones in the Roadmap.
+- Previous mission state: **M0–M9 done. PR #1 CI green on Ubuntu + Windows after the checksum fix `9c06553` (E-12); merged to `main` as `5a512a3`; Release v1.0.0 published and Pages live 2026-11-17 (E-13). Waiting on owner checks and owner acceptance.**
 - Latest authorization: [Current State — Current authority](CURRENT_STATE.md#-current-authority).
 
 ## 🔎 Recovery inventory
@@ -33,7 +35,7 @@ Next, for the owner (not something the coordinator can do):
 
 Not run by the coordinator: the NSIS and MSI installers on a clean machine, and a native-window click-through of the desktop UI.
 
-Optional, only on the owner's explicit yes: a docs-only PR `dev` → `main`. Docs updated on `dev` after the merge (README status, these records) are not on `main` until then. It is safe: the release job sees that v1.0.0 exists and leaves its tag and assets unchanged, and Pages redeploys the same `mobile/` bytes. Any new release needs a version bump in every version location plus `.github/release-notes-v<version>.md`.
+Done 2026-11-17 on the owner's "Yes, merge docs": docs-only PR [#2](https://github.com/CipherVaults/Date-Calculator-Tool/pull/2) merged to `main` as `0c3d6e0` (E-14). A docs-only merge is safe: the release job sees that v1.0.0 exists and leaves its tag and assets unchanged, and Pages does not run, because `pages.yml` only triggers on changes to `mobile/**` or its own file, so the live site is untouched. Any later merge to `main` still needs the owner's explicit yes. Any new release needs a version bump in every version location plus `.github/release-notes-v<version>.md`.
 
 ## 🚫 Do not repeat / known pitfalls
 

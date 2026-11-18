@@ -18,7 +18,9 @@
   <a href="Documentation/specs/0-%20FROZEN_DECISIONS.md"><strong>Design decisions</strong></a>
 </p>
 
-> **Status: v1.0.0 released on 2026-11-17.**
+> **Status: v1.1.0 is ready on `dev` and ships when it is merged to `main`. v1.0.0 was released on 2026-11-17.**
+>
+> **What's new in v1.1.0:** clickable mini calendars on Business Days, Date Info and Countdown (with keyboard support); the countdown is remembered across restarts and shows *restored*, *finished* or *finished while closed*; and an unreadable history file is never overwritten (history turns read-only, with Retry and a backed-up fresh start). The date engine is unchanged at 1.0.0. Full notes: [release-notes-v1.1.0.md](.github/release-notes-v1.1.0.md).
 >
 > The **Releases** link has the Windows installers, the portable `.exe`, the standalone mobile HTML and `SHA256SUMS.txt`. The **Mobile & Web App** link is live on GitHub Pages. Both are built by CI from `main`.
 

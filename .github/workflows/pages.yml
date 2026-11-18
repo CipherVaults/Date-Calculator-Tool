@@ -101,13 +101,17 @@ jobs:
             assert(stat.isFile() && stat.size > 0, `Manifest icon missing or empty: ${icon.src}`);
           }
 
+          // App version (tauri.conf.json) and engine version (date-core) are separate: the engine can stay put while the app moves.
           const ver = JSON.parse(read("src-tauri/tauri.conf.json")).version;
           const pkgVer = (p) => ((read(p).split(/^\[/m).find((s) => s.startsWith("package]")) || "").match(/^version\s*=\s*"([^"]+)"/m) || [])[1];
-          assert.strictEqual(pkgVer("src-tauri/Cargo.toml"), ver, "src-tauri/Cargo.toml version");
-          assert.strictEqual(pkgVer("crates/date-core/Cargo.toml"), ver, "date-core Cargo.toml version");
-          assert.strictEqual((scriptMatch[1].match(/\bconst APP_VERSION = "([^"]+)";/) || [])[1], ver, "mobile APP_VERSION");
-          assert(((swCode.match(/\bconst CACHE_NAME = "([^"]+)";/) || [])[1] || "").startsWith(`date-tool-v${ver}-mobile-`), "mobile/sw.js CACHE_NAME version");
-          assert(html.includes(`Mobile &amp; Web v${ver}`) && read("ui/index.html").includes(`Desktop v${ver}`), "Footer versions");
+          const engineVer = pkgVer("crates/date-core/Cargo.toml");
+          assert(/^\d+\.\d+\.\d+$/.test(ver || "") && /^\d+\.\d+\.\d+$/.test(engineVer || ""), `app version ${ver} and engine version ${engineVer} must be x.y.z`);
+          assert.strictEqual(pkgVer("src-tauri/Cargo.toml"), ver, "src-tauri/Cargo.toml version (app)");
+          assert.strictEqual((scriptMatch[1].match(/\bconst APP_VERSION = "([^"]+)";/) || [])[1], ver, "mobile APP_VERSION (app)");
+          assert(new RegExp(`^date-tool-v${ver.replace(/\./g, "\\.")}-mobile-\\d+$`).test((swCode.match(/\bconst CACHE_NAME = "([^"]+)";/) || [])[1] || ""), "mobile/sw.js CACHE_NAME must be date-tool-v<app>-mobile-<n>");
+          assert(html.includes(`Mobile &amp; Web v${ver}`) && read("ui/index.html").includes(`Desktop v${ver}`), "Footer versions (app)");
+          assert.strictEqual((read("crates/date-core/src/lib.rs").match(/\bpub const ENGINE_VERSION: &str = "([^"]+)";/) || [])[1], engineVer, "date-core ENGINE_VERSION (engine)");
+          assert.strictEqual((html.match(/\/\* date-core:begin v(\S+) \*\//) || [])[1], engineVer, "mobile date-core marker (engine)");
 
           const ctx = vm.createContext({});
           vm.runInContext("delete globalThis.Date; delete globalThis.Intl;", ctx);
@@ -115,7 +119,7 @@ jobs:
           vm.runInContext(engineSrc, ctx, { filename: "mobile/index.html:date-core" });
           const call = vm.runInContext("(function (op, text) { return JSON.stringify(DateCore.call(op, JSON.parse(text))); })", ctx);
           const golden = JSON.parse(read(path.join(fixtures, "golden.json")));
-          assert(golden.engine === ver && golden.count >= 12000 && golden.cases.length === golden.count, "golden.json header");
+          assert(golden.engine === engineVer && golden.count >= 12000 && golden.cases.length === golden.count, "golden.json header");
           golden.cases.forEach((c, i) => {
             const got = call(c.op, JSON.stringify(c.req));
             const want = JSON.stringify(c.res);
@@ -134,7 +138,7 @@ jobs:
           assert.strictEqual(res("calc_add_subtract", { date: "2024-01-31", operation: "add", months: "1" }).result.resultDate, "2024-02-29");
           assert.strictEqual(res("calc_add_subtract", { date: "2025-01-31", operation: "add", months: "1" }).result.resultDate, "2025-02-28");
 
-          console.log(`Inline node block OK: ${lfFiles.length} LF files, CSP hashes, DOM sinks, engine Date/Intl ban, manifest, version ${ver} everywhere, ${golden.count} golden cases replayed without Date/Intl, 8 explicit vectors.`);
+          console.log(`Inline node block OK: ${lfFiles.length} LF files, CSP hashes, DOM sinks, engine Date/Intl ban, manifest, app ${ver} / engine ${engineVer} everywhere, ${golden.count} golden cases replayed without Date/Intl, 8 explicit vectors.`);
           NODE
       - name: Setup Pages
         uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
