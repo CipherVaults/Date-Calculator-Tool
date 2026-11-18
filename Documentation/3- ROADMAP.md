@@ -19,8 +19,8 @@
 
 | # | Milestone | Done when | Status |
 |---|---|---|---|
-| A1 | Clickable mini calendars | Business Days, Date Info and Countdown days are clickable, with keyboard support and focus kept; safety-eval criteria green | in progress |
-| A2 | Countdown persistence, history-loss fix, version split | countdown restores after close/reopen with "finished" wording; an unreadable history goes read-only, never overwritten; CI version checks split app/engine | in progress |
+| A1 | Clickable mini calendars | Business Days, Date Info and Countdown days are clickable, with keyboard support and focus kept; safety-eval criteria green | done 2026-11-18 (`c66843a`) |
+| A2 | Countdown persistence, history-loss fix, version split | countdown restores after close/reopen with "finished" wording; an unreadable history goes read-only, never overwritten; CI version checks split app/engine | done 2026-11-18 (`c66843a`) |
 | A3 | v1.1.0 release | full checks + manual checklist; **owner-approved** merge → v1.1.0 Release | — |
 
 After v1.1.0: Part B, Portable Calculator Tool v1.0.0, in a new repo (M0–M11 in the plan).
