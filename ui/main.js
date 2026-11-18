@@ -66,6 +66,43 @@ function str(value) {
 }
 
 // ---------------------------------------------------------------------------
+// Shared UI text (v1.1.0). mobile/index.html carries a byte-identical copy of
+// this table (cross-surface-text): change both together.
+// ---------------------------------------------------------------------------
+
+const UI_TEXT = Object.freeze({
+  calSuffixStart: ", start",
+  calSuffixEnd: ", end",
+  calSuffixSelected: ", selected",
+  calHintStart: "Next click sets the start date.",
+  calHintEnd: "Next click sets the end date.",
+  cdIdle: "Pick a target date to start the countdown.",
+  cdCounting: (when) => `Counting down to ${when}.`,
+  cdRestored: (left, when) => `Countdown restored: ${left} left until ${when}.`,
+  cdFinished: (when) => `Finished: ${when} has passed. Counting the time since.`,
+  cdFinishedClosed: (when) =>
+    `Finished while the app was closed: ${when}. Counting the time since.`,
+  cdStopped: (message) => `Countdown stopped: ${message}`,
+  cdPhaseCounting: "counting down",
+  cdPhaseRestored: "restored",
+  cdPhaseFinished: "finished",
+  cdPhaseFinishedClosed: "finished while closed",
+  cdSavedNote: "Saved on this device. It resumes when you reopen the app.",
+  cdForget: "Forget",
+  cdNewerNote: "Saved countdown is from a newer version.",
+  cdUnreadableNote: "The saved countdown could not be read, so it is left untouched.",
+  cdWriteFailedNote: "The countdown could not be saved on this device.",
+  cdSessionNote: "Kept for this session only. This browser is not saving site data.",
+  historyReadOnly: "History could not be read safely. Nothing will be overwritten.",
+  historyReasonReadError:
+    "The history file could not be read. Another program may be using it.",
+  historyReasonTooLarge: "The history file is larger than the size limit.",
+  historyReasonCorrupt: "The history file is damaged or has entries that cannot be read.",
+  historyReasonNewer: "The history file is from a newer version of the app.",
+  historyResetFailed: "A new history could not be started. Try again."
+});
+
+// ---------------------------------------------------------------------------
 // Cards
 // ---------------------------------------------------------------------------
 
@@ -710,10 +747,15 @@ function updateCalendarSummaries() {
 // ---------------------------------------------------------------------------
 
 const calViews = {
-  biz: { prefix: "bizCal", year: 0, month: 0, rangeStart: null, rangeEnd: null, seq: 0, last: null },
-  info: { prefix: "infoCal", year: 0, month: 0, rangeStart: null, rangeEnd: null, seq: 0, last: null },
-  cd: { prefix: "cdCal", year: 0, month: 0, rangeStart: null, rangeEnd: null, seq: 0, last: null }
+  biz: { prefix: "bizCal", year: 0, month: 0, rangeStart: null, rangeEnd: null, seq: 0, last: null, focusDate: "" },
+  info: { prefix: "infoCal", year: 0, month: 0, rangeStart: null, rangeEnd: null, seq: 0, last: null, focusDate: "" },
+  cd: { prefix: "cdCal", year: 0, month: 0, rangeStart: null, rangeEnd: null, seq: 0, last: null, focusDate: "" }
 };
+
+// A calendar click moves the Business Days view to the clicked month. It is
+// set only by a click and consumed once by updateBusinessLive; typed input
+// keeps the v1.0.0 anchoring (the earlier date).
+const calAnchorOverride = { biz: null };
 
 function setCalendarView(key, { anchor = null, rangeStart = null, rangeEnd = null } = {}) {
   const view = calViews[key];
@@ -736,6 +778,16 @@ function shiftCalendar(key, delta) {
   );
   view.year = Math.floor(idx / 12);
   view.month = (idx % 12) + 1;
+  return refreshMiniCal(key);
+}
+
+// The header "today" button changes the view only; it never selects.
+function showCalendarToday(key) {
+  const view = calViews[key];
+  const t = parseIso(todayIso());
+  if (!t) return Promise.resolve(null);
+  view.year = t.y;
+  view.month = t.m;
   return refreshMiniCal(key);
 }
 
@@ -764,8 +816,19 @@ async function refreshMiniCal(key) {
   return grid;
 }
 
-function miniCalCell(cell) {
-  const el = document.createElement("span");
+// Selection marks come from the field values, never from the engine range
+// flags: the engine range is [earlier, later) and its end can be the day
+// before the later date (FROZEN §5).
+function calMarks(key) {
+  if (key === "biz") return { start: readDate("bizStart"), end: readDate("bizEnd"), selected: "" };
+  if (key === "info") return { start: "", end: "", selected: readDate("infoDate") };
+  return { start: "", end: "", selected: readDate("cdTarget") };
+}
+
+function miniCalCell(cell, marks) {
+  const el = document.createElement("button");
+  el.type = "button";
+  const date = str(cell.date);
   const classes = ["mini-cal-cell"];
   if (!cell.inMonth) classes.push("out");
   if (cell.outOfRange) classes.push("out-of-range");
@@ -775,16 +838,48 @@ function miniCalCell(cell) {
     if (cell.approximate) classes.push("approx");
   }
   if (cell.inRange) classes.push("in-range");
-  if (cell.isRangeStart || cell.isRangeEnd) classes.push("endpoint");
+  let suffix = "";
+  if (date && date === marks.start) {
+    classes.push("pick-start");
+    suffix += UI_TEXT.calSuffixStart;
+  }
+  if (date && date === marks.end) {
+    classes.push("pick-end");
+    suffix += UI_TEXT.calSuffixEnd;
+  }
+  if (date && date === marks.selected) {
+    classes.push("selected");
+    suffix += UI_TEXT.calSuffixSelected;
+  }
+  if (suffix) classes.push("endpoint");
   if (cell.isToday) classes.push("today");
   el.className = classes.join(" ");
   el.textContent = typeof cell.day === "number" ? String(cell.day) : "";
-  const label = str(cell.label);
-  el.setAttribute("role", "img");
-  el.setAttribute("aria-label", label || str(cell.date));
+  const label = str(cell.label) || date;
+  el.setAttribute("aria-label", `${label}${suffix}`);
+  if (suffix) el.setAttribute("aria-pressed", "true");
+  if (cell.isToday) el.setAttribute("aria-current", "date");
   if (label) el.title = label;
-  el.dataset.date = str(cell.date);
+  el.dataset.date = date;
+  el.setAttribute("tabindex", "-1");
+  if (cell.outOfRange) el.disabled = true;
   return el;
+}
+
+// Exactly one tab stop per grid: the focused date if it is shown, else the
+// last focused date, a selected date or endpoint, today, or the 1st.
+function rovingDate(view, cells, marks, keep) {
+  const shown = (iso, inMonthOnly) =>
+    Boolean(iso) &&
+    cells.some((c) => c.date === iso && !c.outOfRange && (!inMonthOnly || c.inMonth));
+  if (shown(keep, false)) return keep;
+  for (const iso of [view.focusDate, marks.start, marks.end, marks.selected]) {
+    if (shown(iso, true)) return iso;
+  }
+  const today = cells.find((c) => c.isToday && c.inMonth && !c.outOfRange);
+  if (today) return str(today.date);
+  const first = cells.find((c) => c.inMonth && !c.outOfRange);
+  return first ? str(first.date) : "";
 }
 
 function paintMiniCal(key, grid) {
@@ -811,9 +906,201 @@ function paintMiniCal(key, grid) {
       return span(cell && cell.weekend ? "mini-cal-dow weekend" : "mini-cal-dow", str(h));
     })
   );
-  body.replaceChildren(
-    ...grid.cells.filter((c) => c && typeof c === "object").map(miniCalCell)
-  );
+  // Focus survives the repaint: a keyboard move names the new date in
+  // view.focusDate; otherwise the focused cell's own date is kept.
+  const active = document.activeElement;
+  const hadFocus = Boolean(active && active !== body && body.contains(active));
+  const keep = hadFocus ? view.focusDate || str(active.dataset?.date) : "";
+  const cells = grid.cells.filter((c) => c && typeof c === "object");
+  const marks = calMarks(key);
+  const nodes = cells.map((c) => miniCalCell(c, marks));
+  const stop = rovingDate(view, cells, marks, keep);
+  const stopNode = nodes.find((n) => n.dataset.date === stop) || null;
+  if (stopNode) stopNode.setAttribute("tabindex", "0");
+  body.replaceChildren(...nodes);
+  if (hadFocus && stopNode) stopNode.focus({ preventScroll: true });
+}
+
+function setRovingStop(body, node) {
+  Array.from(body.children).forEach((n) => {
+    n.setAttribute("tabindex", n === node ? "0" : "-1");
+  });
+}
+
+// ± days or months through the engine (month ends clamp), or null at the
+// ends of the 0001-01-01..9999-12-31 range.
+async function engineShiftDate(iso, { days = 0, months = 0 } = {}) {
+  if (!isIsoDate(iso) || (days === 0 && months === 0)) return null;
+  try {
+    const r = okResult(
+      await engine("calc_add_subtract", {
+        date: iso,
+        operation: days < 0 || months < 0 ? "subtract" : "add",
+        years: "",
+        months: months ? String(Math.abs(months)) : "",
+        weeks: "",
+        days: days ? String(Math.abs(days)) : "",
+        businessDays: false,
+        calendar: currentCalendar()
+      })
+    );
+    return r && isIsoDate(r.resultDate) ? r.resultDate : null;
+  } catch {
+    return null;
+  }
+}
+
+// Moving focus never selects. Leaving the shown month moves the view; the
+// ends of the range and disabled cells stop the move.
+async function moveMiniCalFocus(key, cell, step) {
+  const view = calViews[key];
+  const body = $(`${view.prefix}Grid`);
+  if (!body) return;
+  const nodes = Array.from(body.children);
+  const from = str(cell.dataset.date);
+  let target = "";
+  if (!step.months) {
+    const j = nodes.indexOf(cell) + step.days;
+    if (j >= 0 && j < nodes.length) target = str(nodes[j].dataset.date);
+  }
+  if (!target) target = (await engineShiftDate(from, step)) || "";
+  const t = parseIso(target);
+  if (!t) return;
+  const node = Array.from(body.children).find((n) => n.dataset.date === target) || null;
+  if (node && node.disabled) return;
+  view.focusDate = target;
+  if (node && t.y === view.year && t.m === view.month) {
+    setRovingStop(body, node);
+    node.focus();
+    return;
+  }
+  view.year = t.y;
+  view.month = t.m;
+  await refreshMiniCal(key);
+}
+
+function onMiniCalKeydown(key, event) {
+  const cell =
+    event.target && typeof event.target.closest === "function"
+      ? event.target.closest(".mini-cal-cell")
+      : null;
+  if (!cell || event.altKey || event.ctrlKey || event.metaKey) return;
+  const k = event.key;
+  if (k === "Enter" || k === " " || k === "Spacebar") {
+    // Handled here (not by the native click) so Shift+Enter reaches the pick.
+    event.preventDefault();
+    if (!cell.disabled) onMiniCalPick(key, str(cell.dataset.date), { shift: event.shiftKey });
+    return;
+  }
+  const body = $(`${calViews[key].prefix}Grid`);
+  const col = body ? Array.from(body.children).indexOf(cell) % 7 : 0;
+  const year = event.shiftKey ? 12 : 1;
+  const steps = {
+    ArrowLeft: { days: -1 },
+    ArrowRight: { days: 1 },
+    ArrowUp: { days: -7 },
+    ArrowDown: { days: 7 },
+    Home: { days: -col },
+    End: { days: 6 - col },
+    PageUp: { months: -year },
+    PageDown: { months: year }
+  };
+  if (!Object.hasOwn(steps, k)) return;
+  event.preventDefault();
+  const step = { days: 0, months: 0, ...steps[k] };
+  if (step.days === 0 && step.months === 0) return;
+  moveMiniCalFocus(key, cell, step);
+}
+
+// ---------------------------------------------------------------------------
+// Calendar picks (A1). A pick fills a field and recomputes that card; it
+// never writes history (only calculate, Enter and copy do).
+// ---------------------------------------------------------------------------
+
+let bizPickTarget = "start";
+
+function setBizPickTarget(target) {
+  bizPickTarget = target === "end" ? "end" : "start";
+  const start = $("bizPickStart");
+  const end = $("bizPickEnd");
+  if (start) start.checked = bizPickTarget === "start";
+  if (end) end.checked = bizPickTarget === "end";
+  const hint = $("bizCalHint");
+  const text = bizPickTarget === "end" ? UI_TEXT.calHintEnd : UI_TEXT.calHintStart;
+  if (hint && hint.textContent !== text) hint.textContent = text;
+}
+
+// Start if the start date is empty, else End if the end date is empty, else Start.
+function resetBizPickTarget() {
+  setBizPickTarget(readDate("bizStart") && !readDate("bizEnd") ? "end" : "start");
+}
+
+async function onMiniCalPick(key, iso, { shift = false } = {}) {
+  if (!isIsoDate(iso) || !Object.hasOwn(calViews, key)) return;
+  calViews[key].focusDate = iso;
+  if (key === "info") {
+    setField("infoDate", iso);
+    await updateInfoLive();
+    return;
+  }
+  if (key === "cd") {
+    // The target time is kept; a past day shows the finished state.
+    setField("cdTarget", iso);
+    persistCountdown();
+    await updateCountdownLive();
+    return;
+  }
+  const target = shift ? "end" : bizPickTarget;
+  setField(target === "end" ? "bizEnd" : "bizStart", iso);
+  setBizPickTarget(target === "end" ? "start" : "end");
+  calAnchorOverride.biz = iso;
+  await updateBusinessLive();
+}
+
+function bindMiniCalendars() {
+  Object.keys(calViews).forEach((key) => {
+    const p = calViews[key].prefix;
+    $(`${p}PrevBtn`)?.addEventListener("click", () => shiftCalendar(key, -1));
+    $(`${p}NextBtn`)?.addEventListener("click", () => shiftCalendar(key, 1));
+    $(`${p}TodayBtn`)?.addEventListener("click", () => showCalendarToday(key));
+    const body = $(`${p}Grid`);
+    if (!body) return;
+    body.addEventListener("click", (event) => {
+      const cell =
+        event.target && typeof event.target.closest === "function"
+          ? event.target.closest(".mini-cal-cell")
+          : null;
+      if (!cell || cell.disabled || !body.contains(cell)) return;
+      onMiniCalPick(key, str(cell.dataset.date), { shift: Boolean(event.shiftKey) });
+    });
+    body.addEventListener("keydown", (event) => onMiniCalKeydown(key, event));
+    body.addEventListener("focusin", (event) => {
+      const cell =
+        event.target && typeof event.target.closest === "function"
+          ? event.target.closest(".mini-cal-cell")
+          : null;
+      if (!cell || !body.contains(cell)) return;
+      calViews[key].focusDate = str(cell.dataset.date);
+      setRovingStop(body, cell);
+    });
+  });
+
+  ["bizPickStart", "bizPickEnd"].forEach((id) => {
+    $(id)?.addEventListener("change", (event) => {
+      const radio = event.currentTarget;
+      setBizPickTarget(radio.checked ? radio.value : bizPickTarget);
+    });
+  });
+  $("bizStart")?.addEventListener("focus", () => setBizPickTarget("start"));
+  $("bizEnd")?.addEventListener("focus", () => setBizPickTarget("end"));
+  // A date committed by typing moves the calendar on to the other, still-empty end,
+  // so the next tap fills it instead of overwriting the date just typed.
+  $("bizStart")?.addEventListener("change", () => {
+    if (readDate("bizStart") && !readDate("bizEnd")) setBizPickTarget("end");
+  });
+  $("bizEnd")?.addEventListener("change", () => {
+    if (readDate("bizEnd") && !readDate("bizStart")) setBizPickTarget("start");
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1019,12 +1306,19 @@ async function updateBusinessLive() {
   const startDate = readDate("bizStart");
   const endDate = readDate("bizEnd");
   const includeEndDay = Boolean($("bizIncludeEnd")?.checked);
+  // Consumed once: only the update a calendar click started follows it.
+  const clickedAnchor = calAnchorOverride.biz;
+  calAnchorOverride.biz = null;
 
   if (!startDate || !endDate) {
     cardIdle("business");
     renderHolidayHits(null);
     const single = startDate || endDate || null;
-    await setCalendarView("biz", { anchor: single, rangeStart: single, rangeEnd: single });
+    await setCalendarView("biz", {
+      anchor: clickedAnchor || single,
+      rangeStart: single,
+      rangeEnd: single
+    });
     return;
   }
 
@@ -1095,7 +1389,11 @@ async function updateBusinessLive() {
       if (ticket !== seq.business) return;
       rangeEnd = prev && isIsoDate(prev.resultDate) ? prev.resultDate : later;
     }
-    await setCalendarView("biz", { anchor: earlier, rangeStart: earlier, rangeEnd });
+    await setCalendarView("biz", {
+      anchor: clickedAnchor || earlier,
+      rangeStart: earlier,
+      rangeEnd
+    });
   } catch {
     if (ticket !== seq.business) return;
     cardError("business", "Calculation failed.");
@@ -1282,6 +1580,258 @@ let cdActive = false;
 let cdTimer = 0;
 let cdStatusKey = "";
 
+// ---------------------------------------------------------------------------
+// Countdown persistence (A2): countdown.json through countdown_load / _save /
+// _clear. Saved on commit only (change, pills, today, calendar click, history
+// restore, and a flush when the page is hidden), never on input or a tick.
+// An empty or invalid field never clears the record; only Forget and Clear do.
+// ---------------------------------------------------------------------------
+
+const CD_SCHEMA_VERSION = 1;
+const CD_STATE_KEYS = ["schemaVersion", "targetDate", "targetTime", "savedAtMs", "finishedSeenAtMs"];
+const CD_TIME_RE = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
+
+let cdStored = null; // the record known to be saved, or null
+let cdLoadStatus = "empty"; // countdown_load status: ok|empty|newer|corrupt|unreadable
+let cdStoreBlocked = false; // newer or unreadable record: never write over it
+let cdForgottenPair = ""; // the pair Forget removed; a page-hide flush skips it
+let cdRestoredPair = ""; // the pair restored at launch ("date|time")
+let cdRestorePending = false; // the first render after a restore is still due
+let cdClosedFinish = false; // that render found it finished, never seen
+let cdWriteFailed = false; // the last countdown save or clear failed
+let cdWriteChain = Promise.resolve();
+
+function cdPair(date, time) {
+  return `${date}|${time}`;
+}
+
+function isSafeMs(value) {
+  return Number.isSafeInteger(value) && value >= 0;
+}
+
+function isCountdownState(s) {
+  return (
+    Boolean(s) &&
+    typeof s === "object" &&
+    !Array.isArray(s) &&
+    Object.keys(s).length === CD_STATE_KEYS.length &&
+    CD_STATE_KEYS.every((k) => Object.hasOwn(s, k)) &&
+    s.schemaVersion === CD_SCHEMA_VERSION &&
+    isIsoDate(s.targetDate) &&
+    parseIso(s.targetDate) !== null &&
+    typeof s.targetTime === "string" &&
+    (s.targetTime === "" || CD_TIME_RE.test(s.targetTime)) &&
+    isSafeMs(s.savedAtMs) &&
+    (s.finishedSeenAtMs === null || isSafeMs(s.finishedSeenAtMs))
+  );
+}
+
+// A field mid-edit (one segment cleared) reads "" with validity.badInput.
+function countdownFieldsPair() {
+  const dateEl = $("cdTarget");
+  const timeEl = $("cdTime");
+  if (dateEl?.validity?.badInput || timeEl?.validity?.badInput) return null;
+  const targetDate = readDate("cdTarget");
+  const targetTime = readDate("cdTime");
+  if (!isIsoDate(targetDate) || parseIso(targetDate) === null) return null;
+  if (targetTime !== "" && !CD_TIME_RE.test(targetTime)) return null;
+  return { targetDate, targetTime };
+}
+
+// Writes run one at a time, in order, so the last commit wins. The returned
+// promise settles with this write's own outcome; the chain never rejects.
+function queueCountdownWrite(run) {
+  const result = cdWriteChain.then(run, run);
+  cdWriteChain = result.then(
+    () => undefined,
+    () => undefined
+  );
+  return result;
+}
+
+// A refusal from the store itself (a newer-version or unreadable record
+// appeared after launch) blocks further writes; any other failure says the
+// countdown is not saved, so the note never claims it is.
+function onCountdownWriteFailed(err) {
+  const reason = String(err ?? "");
+  if (reason.includes("countdown_newer_schema")) {
+    cdStored = null;
+    cdLoadStatus = "newer";
+    cdStoreBlocked = true;
+  } else if (reason.includes("countdown_unreadable")) {
+    cdStored = null;
+    cdLoadStatus = "unreadable";
+    cdStoreBlocked = true;
+  }
+  cdWriteFailed = !cdStoreBlocked;
+  renderCountdownNote();
+}
+
+// The desktop always saves to a file; only the mobile/web build can fall
+// back to a session-only store.
+function countdownSessionOnly() {
+  return false;
+}
+
+function renderCountdownNote() {
+  const note = $("cdSavedNote");
+  const text = $("cdSavedNoteText");
+  const forget = $("cdForgetBtn");
+  if (!note || !text || !forget) return;
+  let message = "";
+  let canForget = false;
+  if (cdLoadStatus === "newer") {
+    message = UI_TEXT.cdNewerNote;
+  } else if (cdLoadStatus === "unreadable") {
+    message = UI_TEXT.cdUnreadableNote;
+  } else if (cdWriteFailed) {
+    // Forget stays available: it retries removing whatever is stored.
+    message = UI_TEXT.cdWriteFailedNote;
+    canForget = true;
+  } else if (cdStored) {
+    message = countdownSessionOnly() ? UI_TEXT.cdSessionNote : UI_TEXT.cdSavedNote;
+    canForget = true;
+  }
+  // Never an input: focusing one inside a tap opens the phone's picker.
+  if (!canForget && document.activeElement === forget) $("calcCdBtn")?.focus();
+  if (text.textContent !== message) text.textContent = message;
+  forget.classList.toggle("hidden", !canForget);
+  note.classList.toggle("hidden", message === "");
+}
+
+// `explicit` is a user commit; the page-hide flush passes false so it never
+// re-saves a countdown the user just told the app to forget.
+function persistCountdown({ explicit = true } = {}) {
+  if (cdStoreBlocked) return cdWriteChain;
+  const pair = countdownFieldsPair();
+  if (!pair) return cdWriteChain;
+  const key = cdPair(pair.targetDate, pair.targetTime);
+  if (explicit) cdForgottenPair = "";
+  else if (key === cdForgottenPair) return cdWriteChain;
+  if (cdStored && cdPair(cdStored.targetDate, cdStored.targetTime) === key) return cdWriteChain;
+  const state = {
+    schemaVersion: CD_SCHEMA_VERSION,
+    targetDate: pair.targetDate,
+    targetTime: pair.targetTime,
+    savedAtMs: Date.now(),
+    finishedSeenAtMs: null
+  };
+  // Set now so a repeat commit of the same pair is not queued twice; the
+  // saved note waits for the write, and a failed write rolls this back so
+  // the next commit retries.
+  const previous = { stored: cdStored, status: cdLoadStatus };
+  cdStored = state;
+  cdLoadStatus = "ok";
+  if (cdRestoredPair !== key) {
+    cdRestoredPair = "";
+    cdRestorePending = false;
+    cdClosedFinish = false;
+  }
+  return queueCountdownWrite(() => invoke("countdown_save", { state: { ...state } })).then(
+    () => {
+      if (cdStored !== state) return;
+      cdWriteFailed = false;
+      renderCountdownNote();
+    },
+    (err) => {
+      if (cdStored === state) {
+        cdStored = previous.stored;
+        cdLoadStatus = previous.status;
+      }
+      onCountdownWriteFailed(err);
+    }
+  );
+}
+
+// Always asks the store to clear (it is idempotent), so a record another
+// window saved meanwhile is removed too.
+function forgetCountdown() {
+  if (cdStoreBlocked) return cdWriteChain;
+  const pair = countdownFieldsPair();
+  cdForgottenPair = pair ? cdPair(pair.targetDate, pair.targetTime) : "";
+  cdStored = null;
+  cdLoadStatus = "empty";
+  cdWriteFailed = false;
+  cdRestoredPair = "";
+  cdRestorePending = false;
+  cdClosedFinish = false;
+  renderCountdownNote();
+  return queueCountdownWrite(() => invoke("countdown_clear")).then(
+    () => undefined,
+    (err) => {
+      if (cdStored === null) onCountdownWriteFailed(err);
+    }
+  );
+}
+
+// The one tick-time write: the first visible render of a finished target
+// records when it was seen, at most once per target.
+function markCountdownSeen(targetDate, targetTime) {
+  if (cdStoreBlocked || !cdStored || cdStored.finishedSeenAtMs !== null) return;
+  if (document.visibilityState !== "visible") return;
+  if (cdPair(cdStored.targetDate, cdStored.targetTime) !== cdPair(targetDate, targetTime)) return;
+  const state = { ...cdStored, finishedSeenAtMs: Date.now() };
+  cdStored = state;
+  // Not rolled back on failure: a retry on every tick would write per tick.
+  queueCountdownWrite(() => invoke("countdown_save", { state: { ...state } })).catch((err) => {
+    if (cdStored === state) onCountdownWriteFailed(err);
+  });
+}
+
+// Launch restore: before the first render, and only into an empty card.
+async function restoreSavedCountdown() {
+  let load = null;
+  try {
+    load = await invoke("countdown_load");
+  } catch {
+    load = null;
+  }
+  const status = load && typeof load.status === "string" ? load.status : "";
+  cdRestoredPair = "";
+  cdRestorePending = false;
+  cdClosedFinish = false;
+  cdStored = null;
+  cdWriteFailed = false;
+  if (status === "newer" || status === "unreadable") {
+    cdLoadStatus = status;
+    cdStoreBlocked = true;
+  } else if (!status) {
+    // No store on this backend: run without persistence, write nothing.
+    cdLoadStatus = "empty";
+    cdStoreBlocked = true;
+  } else {
+    cdStoreBlocked = false;
+    cdLoadStatus = status === "ok" || status === "corrupt" ? status : "empty";
+    if (status === "ok" && isCountdownState(load.state)) {
+      cdStored = { ...load.state };
+      if (readDate("cdTarget") === "") {
+        setField("cdTarget", cdStored.targetDate);
+        setField("cdTime", cdStored.targetTime);
+        cdRestoredPair = cdPair(cdStored.targetDate, cdStored.targetTime);
+        cdRestorePending = true;
+      }
+    } else if (status === "ok") {
+      cdLoadStatus = "empty";
+    }
+  }
+  renderCountdownNote();
+}
+
+function setCountdownPhase(phase) {
+  const chip = $("cdPhase");
+  if (!chip) return;
+  const labels = {
+    counting: UI_TEXT.cdPhaseCounting,
+    restored: UI_TEXT.cdPhaseRestored,
+    finished: UI_TEXT.cdPhaseFinished,
+    finishedClosed: UI_TEXT.cdPhaseFinishedClosed
+  };
+  const text = Object.hasOwn(labels, phase) ? labels[phase] : "";
+  if (chip.textContent !== text) chip.textContent = text;
+  chip.classList.toggle("hidden", text === "");
+  chip.classList.toggle("is-finished", phase === "finished" || phase === "finishedClosed");
+}
+
 function clearCountdownTimer() {
   if (cdTimer) window.clearTimeout(cdTimer);
   cdTimer = 0;
@@ -1367,7 +1917,8 @@ async function updateCountdownLive({ fromTick = false } = {}) {
     lastValidCalc.countdown = null;
     cardIdle("countdown");
     setClockIdle();
-    setCountdownStatus("idle", "Pick a target date to start the countdown.");
+    setCountdownPhase("");
+    setCountdownStatus("idle", UI_TEXT.cdIdle);
     if (full) {
       await setCalendarView("cd", { anchor: null });
       if (ticket === seq.countdown) cdFullRenderPending = false;
@@ -1395,7 +1946,8 @@ async function updateCountdownLive({ fromTick = false } = {}) {
       const message = errorMessage(res);
       cardError("countdown", message);
       setClockIdle();
-      setCountdownStatus(`error|${message}`, `Countdown stopped: ${message}`);
+      setCountdownPhase("");
+      setCountdownStatus(`error|${message}`, UI_TEXT.cdStopped(message));
       if (full) {
         await setCalendarView("cd", { anchor: targetDate });
         if (ticket === seq.countdown) cdFullRenderPending = false;
@@ -1413,15 +1965,32 @@ async function updateCountdownLive({ fromTick = false } = {}) {
     setLive("countdown", `→ ${str(r.text)}`);
 
     const when = `${str(r.targetDate)} ${str(r.targetTime)} (${str(r.targetWeekday)})`;
-    if (r.status === "past") {
-      setCountdownStatus(
-        `${targetDate}|${r.targetTime}|past`,
-        `Target passed: counting the time since ${when}.`
-      );
-    } else if (r.status === "now") {
-      setCountdownStatus(`${targetDate}|${r.targetTime}|now`, `The target time is now: ${when}.`);
+    // No engine change: `past|now` is the finished signal. The first render
+    // after a launch restore decides "finished while closed" from
+    // finishedSeenAtMs (null = never seen finished on a visible screen).
+    const finished = r.status === "past" || r.status === "now";
+    // "restored" is the first render only; the next tick says counting down
+    // (one status rewrite, not a stale time left repeated every second).
+    const restoredNow = cdRestoredPair !== "" && cdRestoredPair === cdPair(targetDate, targetTime);
+    const restoreRender = restoredNow && cdRestorePending;
+    if (restoreRender) {
+      cdRestorePending = false;
+      cdClosedFinish = finished && Boolean(cdStored) && cdStored.finishedSeenAtMs === null;
+    }
+    let phase = "counting";
+    if (finished) phase = restoredNow && cdClosedFinish ? "finishedClosed" : "finished";
+    else if (restoreRender) phase = "restored";
+    if (finished) markCountdownSeen(targetDate, targetTime);
+    setCountdownPhase(phase);
+    const statusKey = `${targetDate}|${str(r.targetTime)}|${phase}`;
+    if (phase === "finishedClosed") {
+      setCountdownStatus(statusKey, UI_TEXT.cdFinishedClosed(when));
+    } else if (phase === "finished") {
+      setCountdownStatus(statusKey, UI_TEXT.cdFinished(when));
+    } else if (phase === "restored") {
+      setCountdownStatus(statusKey, UI_TEXT.cdRestored(str(r.text), when));
     } else {
-      setCountdownStatus(`${targetDate}|${r.targetTime}|future`, `Counting down to ${when}.`);
+      setCountdownStatus(statusKey, UI_TEXT.cdCounting(when));
     }
 
     lastValidCalc.countdown = {
@@ -1462,6 +2031,7 @@ async function updateCountdownLive({ fromTick = false } = {}) {
     lastValidCalc.countdown = null;
     cardError("countdown", "Calculation failed.");
     setClockIdle();
+    setCountdownPhase("");
   }
 }
 
@@ -1492,6 +2062,7 @@ async function applyCountdownQuick(kind) {
   }
   if (!target) return;
   setField("cdTarget", target);
+  persistCountdown();
   await updateCountdownLive();
 }
 
@@ -1585,6 +2156,7 @@ async function restoreHistoryEntry(entry) {
       setField("bizStart", val("startDate"));
       setField("bizEnd", val("endDate"));
       $("bizIncludeEnd").checked = val("includeEndDay") === "true";
+      resetBizPickTarget();
       break;
     case "age":
       await setLeapRule(val("leapDayRule"), false);
@@ -1597,6 +2169,7 @@ async function restoreHistoryEntry(entry) {
     case "countdown":
       setField("cdTarget", val("targetDate"));
       setField("cdTime", val("targetTime"));
+      persistCountdown();
       break;
     default:
       return;
@@ -1678,6 +2251,7 @@ function renderHistory(entries) {
     deleteBtn.textContent = "×";
     deleteBtn.title = "Delete history entry";
     deleteBtn.setAttribute("aria-label", "Delete history entry");
+    deleteBtn.disabled = historyReadOnly;
     deleteBtn.addEventListener("click", () => {
       deleteHistoryEntry(entry.id);
     });
@@ -1689,26 +2263,31 @@ function renderHistory(entries) {
 }
 
 async function deleteHistoryEntry(id) {
+  if (historyReadOnly) return;
   try {
     const updated = await invoke("history_delete", { id });
     renderHistory(updated);
-  } catch {
+  } catch (err) {
     // History delete errors should not interrupt calculator usage.
+    await onHistoryWriteError(err);
   }
 }
 
 async function recordHistoryFor(key) {
+  if (historyReadOnly) return;
   const entry = buildValidHistoryCandidate(lastValidCalc[key]);
   if (!entry) return;
   try {
     const updated = await invoke("history_add", { entry });
     renderHistory(updated);
-  } catch {
+  } catch (err) {
     // History write errors should not interrupt calculator usage.
+    await onHistoryWriteError(err);
   }
 }
 
 async function loadHistory() {
+  await refreshHistoryState();
   try {
     const entries = await invoke("history_list");
     renderHistory(entries);
@@ -1718,10 +2297,118 @@ async function loadHistory() {
 }
 
 // ---------------------------------------------------------------------------
+// History read-only mode (A3): a history file that could not be read safely
+// is never overwritten. Add, delete and clear are refused until Retry reads
+// it or the user explicitly starts a new history.
+// ---------------------------------------------------------------------------
+
+let historyReadOnly = false;
+let historyReadOnlyReason = null;
+
+const HISTORY_REASON_TEXT = {
+  read_error: UI_TEXT.historyReasonReadError,
+  too_large: UI_TEXT.historyReasonTooLarge,
+  corrupt: UI_TEXT.historyReasonCorrupt,
+  newer_schema: UI_TEXT.historyReasonNewer
+};
+
+function hideHistoryResetConfirm() {
+  $("historyResetConfirm")?.classList.add("hidden");
+  $("historyResetBtn")?.classList.remove("hidden");
+}
+
+function hideClearHistoryConfirm() {
+  $("clearHistoryConfirm")?.classList.add("hidden");
+  $("clearHistoryBtn")?.classList.remove("hidden");
+}
+
+function applyHistoryState(st, detailOverride = "") {
+  const wasReadOnly = historyReadOnly;
+  historyReadOnly = Boolean(st && typeof st === "object" && st.readOnly === true);
+  const reason = historyReadOnly && st && typeof st.reason === "string" ? st.reason : null;
+  historyReadOnlyReason = reason && Object.hasOwn(HISTORY_REASON_TEXT, reason) ? reason : null;
+  const banner = $("historyReadOnlyBanner");
+  const detail = $("historyReadOnlyDetail");
+  const text =
+    detailOverride || (historyReadOnlyReason ? HISTORY_REASON_TEXT[historyReadOnlyReason] : "");
+  // The banner is shown before its live message changes, so the change is
+  // announced; the buttons sit outside the live region.
+  banner?.classList.toggle("hidden", !historyReadOnly);
+  if (detail && detail.textContent !== text) detail.textContent = text;
+  const clearBtn = $("clearHistoryBtn");
+  if (clearBtn) clearBtn.disabled = historyReadOnly;
+  if (historyReadOnly) {
+    hideClearHistoryConfirm();
+  } else {
+    hideHistoryResetConfirm();
+    const active = document.activeElement;
+    if (wasReadOnly && banner && active && banner.contains(active)) clearBtn?.focus();
+  }
+  document.querySelectorAll(".history-delete-btn").forEach((btn) => {
+    btn.disabled = historyReadOnly;
+  });
+}
+
+// An older backend without history_state is treated as writable (v1.0.0).
+async function refreshHistoryState() {
+  try {
+    applyHistoryState(await invoke("history_state"));
+  } catch {
+    applyHistoryState(null);
+  }
+}
+
+async function onHistoryWriteError(err) {
+  if (String(err ?? "").includes("history_read_only")) {
+    await refreshHistoryState();
+    await loadHistoryEntriesOnly();
+  }
+}
+
+async function loadHistoryEntriesOnly() {
+  try {
+    renderHistory(await invoke("history_list"));
+  } catch {
+    renderHistory([]);
+  }
+}
+
+async function retryHistory() {
+  try {
+    applyHistoryState(await invoke("history_retry"));
+  } catch {
+    await refreshHistoryState();
+  }
+  await loadHistoryEntriesOnly();
+}
+
+async function resetHistoryFile() {
+  let failed = false;
+  try {
+    await invoke("history_reset");
+  } catch {
+    failed = true;
+  }
+  hideHistoryResetConfirm();
+  try {
+    const st = await invoke("history_state");
+    applyHistoryState(st, failed && st && st.readOnly === true ? UI_TEXT.historyResetFailed : "");
+  } catch {
+    applyHistoryState(null);
+  }
+  await loadHistoryEntriesOnly();
+  if (!historyReadOnly) $("clearHistoryBtn")?.focus();
+  else $("historyResetBtn")?.focus();
+}
+
+// ---------------------------------------------------------------------------
 // Clear
 // ---------------------------------------------------------------------------
 
-function resetCard(key) {
+// `forget` is the countdown card's own Clear; clear all passes false, so a
+// mis-tap in the header row only empties fields and never deletes the saved
+// countdown (Forget and the card's Clear stay the explicit actions).
+function resetCard(key, { forget = true } = {}) {
   switch (key) {
     case "between":
       clearFields(["betweenStart", "betweenEnd"]);
@@ -1733,6 +2420,7 @@ function resetCard(key) {
     case "business":
       clearFields(["bizStart", "bizEnd"]);
       $("bizIncludeEnd").checked = false;
+      resetBizPickTarget();
       break;
     case "age":
       clearFields(["ageBirth", "ageAsOf"]);
@@ -1742,6 +2430,9 @@ function resetCard(key) {
       break;
     case "countdown":
       stopCountdown();
+      // The card's Clear is an explicit action: it also forgets the saved
+      // countdown.
+      if (forget) forgetCountdown();
       clearFields(["cdTarget", "cdTime"]);
       break;
     default:
@@ -1752,7 +2443,7 @@ function resetCard(key) {
 }
 
 function clearAllCalculators() {
-  const done = Promise.all(CARD_KEYS.map((key) => resetCard(key)));
+  const done = Promise.all(CARD_KEYS.map((key) => resetCard(key, { forget: false })));
   $("betweenStart")?.focus();
   return done;
 }
@@ -2615,6 +3306,7 @@ function bindControls() {
   const clearHistoryBtn = $("clearHistoryBtn");
   const clearConfirmGroup = $("clearHistoryConfirm");
   clearHistoryBtn.addEventListener("click", () => {
+    if (historyReadOnly) return;
     clearHistoryBtn.classList.add("hidden");
     clearConfirmGroup.classList.remove("hidden");
     $("cancelClearHistoryBtn")?.focus();
@@ -2625,15 +3317,32 @@ function bindControls() {
     clearHistoryBtn.focus();
   });
   $("confirmClearHistoryBtn").addEventListener("click", async () => {
-    try {
-      const entries = await invoke("history_clear");
-      renderHistory(entries);
-    } catch {
-      renderHistory([]);
+    if (!historyReadOnly) {
+      try {
+        const entries = await invoke("history_clear");
+        renderHistory(entries);
+      } catch (err) {
+        if (String(err ?? "").includes("history_read_only")) await onHistoryWriteError(err);
+        else renderHistory([]);
+      }
     }
     clearConfirmGroup.classList.add("hidden");
     clearHistoryBtn.classList.remove("hidden");
   });
+
+  // History read-only banner: Retry, and a two-step "start a new history".
+  $("historyRetryBtn")?.addEventListener("click", () => retryHistory());
+  $("historyResetBtn")?.addEventListener("click", () => {
+    if (!historyReadOnly) return;
+    $("historyResetBtn").classList.add("hidden");
+    $("historyResetConfirm")?.classList.remove("hidden");
+    $("cancelHistoryResetBtn")?.focus();
+  });
+  $("cancelHistoryResetBtn")?.addEventListener("click", () => {
+    hideHistoryResetConfirm();
+    $("historyResetBtn")?.focus();
+  });
+  $("confirmHistoryResetBtn")?.addEventListener("click", () => resetHistoryFile());
 }
 
 function bindSettingsControls() {
@@ -2734,7 +3443,12 @@ function bindCards() {
 
   live(["infoDate"], updateInfoLive);
 
+  // Commit listeners first, so a render that follows sees the saved record.
+  ["cdTarget", "cdTime"].forEach((id) => {
+    $(id)?.addEventListener("change", () => persistCountdown());
+  });
   live(["cdTarget", "cdTime"], () => updateCountdownLive());
+  $("cdForgetBtn")?.addEventListener("click", () => forgetCountdown());
   document.querySelectorAll(".quick-pill[data-quick]").forEach((btn) => {
     btn.addEventListener("click", () => applyCountdownQuick(btn.dataset.quick));
   });
@@ -2746,16 +3460,13 @@ function bindCards() {
       if (!target) return;
       target.value = todayIso();
       syncDateEmpty(target);
+      if (target.id === "cdTarget") persistCountdown();
       target.dispatchEvent(new Event("input", { bubbles: true }));
     });
   });
 
-  // Mini calendar month navigation.
-  Object.keys(calViews).forEach((key) => {
-    const p = calViews[key].prefix;
-    $(`${p}PrevBtn`)?.addEventListener("click", () => shiftCalendar(key, -1));
-    $(`${p}NextBtn`)?.addEventListener("click", () => shiftCalendar(key, 1));
-  });
+  // Mini calendars: month navigation, "today" view, click and keyboard picks.
+  bindMiniCalendars();
 
   attachAmountPasteSanitizers();
 }
@@ -2826,14 +3537,18 @@ async function runSmokeTestIfRequested(smokeEnabledArg) {
 
     const appInfo = await invoke("get_app_info");
     check("app-name", appInfo.name === "Date Calculator Tool");
-    check("app-version", appInfo.version === "1.0.0");
+    check("app-version", appInfo.version === "1.1.0");
     check(
       "app-credits",
       appInfo.credits.includes("Mohamed Sayed") &&
         appInfo.credits.includes("Ahmed Emara") &&
         appInfo.credits.includes("Claude")
     );
-    check("footer-version", txt("appVersion").includes("Desktop v1.0.0"));
+    check("footer-version", txt("appVersion").includes("Desktop v1.1.0"));
+    check(
+      "countdown-store-empty-at-launch",
+      $("cdTarget").value === "" && $("cdSavedNote").classList.contains("hidden")
+    );
 
     const quickLinks = Array.from(document.querySelectorAll(".quick-nav .quick-link"));
     check(
@@ -3185,6 +3900,151 @@ async function runSmokeTestIfRequested(smokeEnabledArg) {
     await selectValue("firstDayOfWeekSelect", "monday");
     check("first-day-monday", savedSettings.firstDayOfWeek === "monday");
 
+    // 5b. Clickable mini calendars (A1)
+    const cellOf = (gridId, iso) =>
+      Array.from($(gridId).children).find((c) => c.dataset.date === iso) || null;
+    const tabStops = (gridId) =>
+      Array.from($(gridId).children).filter((c) => c.getAttribute("tabindex") === "0");
+    const keyOn = (el, key, shiftKey = false) =>
+      el?.dispatchEvent(new KeyboardEvent("keydown", { key, shiftKey, bubbles: true, cancelable: true }));
+    check(
+      "calendar-cells-are-buttons",
+      ["bizCalGrid", "infoCalGrid", "cdCalGrid"].every(
+        (id) =>
+          $(id).children.length === 42 &&
+          Array.from($(id).children).every((c) => c.tagName === "BUTTON" && c.type === "button")
+      ) &&
+        tabStops("infoCalGrid").length === 1 &&
+        tabStops("infoCalGrid")[0].dataset.date === "2026-11-16" &&
+        cellOf("infoCalGrid", "2026-11-16")?.getAttribute("aria-current") === "date"
+    );
+    cellOf("infoCalGrid", "2026-11-20")?.click();
+    check(
+      "calendar-click-info",
+      await waitUntil(
+        () =>
+          $("infoDate").value === "2026-11-20" &&
+          txt("infoResult").includes("November 20, 2026") &&
+          Boolean(cellOf("infoCalGrid", "2026-11-20")?.classList.contains("selected")) &&
+          cellOf("infoCalGrid", "2026-11-20")?.getAttribute("aria-pressed") === "true" &&
+          (cellOf("infoCalGrid", "2026-11-20")?.getAttribute("aria-label") || "").endsWith(
+            UI_TEXT.calSuffixSelected
+          )
+      )
+    );
+    check("calendar-click-no-history", allHistoryEntries.length === 2);
+    cellOf("infoCalGrid", "2026-12-03")?.click();
+    check(
+      "calendar-out-cell-moves-view",
+      await waitUntil(
+        () => $("infoDate").value === "2026-12-03" && txt("infoCalTitle") === "December 2026"
+      )
+    );
+    cellOf("infoCalGrid", "2026-12-03")?.focus();
+    keyOn(cellOf("infoCalGrid", "2026-12-03"), "ArrowRight");
+    check(
+      "calendar-keyboard-arrow",
+      await waitUntil(() => document.activeElement?.dataset?.date === "2026-12-04") &&
+        $("infoDate").value === "2026-12-03" &&
+        tabStops("infoCalGrid").length === 1
+    );
+    keyOn(document.activeElement, "PageDown");
+    check(
+      "calendar-keyboard-page-down",
+      await waitUntil(
+        () =>
+          txt("infoCalTitle") === "January 2027" &&
+          document.activeElement?.dataset?.date === "2027-01-04" &&
+          tabStops("infoCalGrid").length === 1 &&
+          tabStops("infoCalGrid")[0] === document.activeElement
+      )
+    );
+    keyOn(document.activeElement, "Enter");
+    check(
+      "calendar-keyboard-enter-selects-and-keeps-focus",
+      await waitUntil(
+        () =>
+          $("infoDate").value === "2027-01-04" &&
+          document.activeElement?.dataset?.date === "2027-01-04" &&
+          Boolean(document.activeElement?.classList.contains("selected"))
+      )
+    );
+    $("infoCalTodayBtn").click();
+    check(
+      "calendar-today-button-view-only",
+      await waitUntil(() => txt("infoCalTitle") === "November 2026") &&
+        $("infoDate").value === "2027-01-04"
+    );
+    await setCalendarView("info", { anchor: "9999-12-15" });
+    const outOfRangeCell = Array.from($("infoCalGrid").children).find((c) =>
+      c.classList.contains("out-of-range")
+    );
+    check(
+      "calendar-out-of-range-disabled",
+      Boolean(outOfRangeCell) && outOfRangeCell.disabled === true
+    );
+    await resetCard("info");
+
+    await resetCard("business");
+    check(
+      "biz-pick-initial-start",
+      $("bizPickStart").checked && !$("bizPickEnd").checked && txt("bizCalHint") === UI_TEXT.calHintStart
+    );
+    cellOf("bizCalGrid", "2026-11-03")?.click();
+    check(
+      "biz-pick-start",
+      await waitUntil(
+        () =>
+          $("bizStart").value === "2026-11-03" &&
+          $("bizPickEnd").checked &&
+          txt("bizCalHint") === UI_TEXT.calHintEnd
+      )
+    );
+    cellOf("bizCalGrid", "2026-11-10")?.click();
+    check(
+      "biz-pick-end",
+      await waitUntil(
+        () =>
+          $("bizEnd").value === "2026-11-10" &&
+          txt("bizResult").startsWith("=5 business days") &&
+          $("bizPickStart").checked
+      )
+    );
+    check(
+      "biz-marks-from-fields",
+      Boolean(cellOf("bizCalGrid", "2026-11-03")?.classList.contains("pick-start")) &&
+        Boolean(cellOf("bizCalGrid", "2026-11-10")?.classList.contains("pick-end")) &&
+        !cellOf("bizCalGrid", "2026-11-10")?.classList.contains("in-range") &&
+        !cellOf("bizCalGrid", "2026-11-09")?.classList.contains("pick-end") &&
+        (cellOf("bizCalGrid", "2026-11-10")?.getAttribute("aria-label") || "").endsWith(
+          UI_TEXT.calSuffixEnd
+        )
+    );
+    cellOf("bizCalGrid", "2026-11-13")?.dispatchEvent(
+      new MouseEvent("click", { bubbles: true, cancelable: true, shiftKey: true })
+    );
+    check(
+      "biz-shift-click-sets-end",
+      await waitUntil(
+        () =>
+          $("bizEnd").value === "2026-11-13" &&
+          $("bizStart").value === "2026-11-03" &&
+          $("bizPickStart").checked
+      )
+    );
+    $("bizEnd").dispatchEvent(new Event("focus"));
+    check("biz-focus-end-selects-end", $("bizPickEnd").checked && txt("bizCalHint") === UI_TEXT.calHintEnd);
+    $("bizStart").dispatchEvent(new Event("focus"));
+    check("biz-focus-start-selects-start", $("bizPickStart").checked);
+    cellOf("bizCalGrid", "2026-12-02")?.click();
+    check(
+      "biz-view-follows-click",
+      await waitUntil(
+        () => $("bizStart").value === "2026-12-02" && txt("bizCalTitle") === "December 2026"
+      )
+    );
+    await resetCard("business");
+
     // 6. Countdown (fixed now: 2026-11-16 10:00:00 UTC+02:00)
     await setInput("cdTarget", "2027-01-01", () => updateCountdownLive());
     check(
@@ -3227,7 +4087,172 @@ async function runSmokeTestIfRequested(smokeEnabledArg) {
       cdActive === false && cdTimer === 0 && txt("cdClock") === "—" && $("cdTarget").value === ""
     );
 
-    // History: clear, add, filter, restore, delete, clear
+    // 6b. Countdown persistence (A2) through the in-memory store
+    const commit = async (id, value) => {
+      setField(id, value);
+      $(id).dispatchEvent(new Event("input", { bubbles: true }));
+      $(id).dispatchEvent(new Event("change", { bubbles: true }));
+      await cdWriteChain;
+      await updateCountdownLive();
+      await cdWriteChain;
+    };
+    let cdLoad = await invoke("countdown_load");
+    check(
+      "countdown-reset-clears-store",
+      cdLoad.status === "empty" && cdLoad.state === null && $("cdSavedNote").classList.contains("hidden")
+    );
+    await commit("cdTarget", "2027-01-01");
+    await commit("cdTime", "09:30");
+    cdLoad = await invoke("countdown_load");
+    check(
+      "countdown-save-load-round-trip",
+      cdLoad.status === "ok" &&
+        cdLoad.state?.schemaVersion === 1 &&
+        cdLoad.state?.targetDate === "2027-01-01" &&
+        cdLoad.state?.targetTime === "09:30" &&
+        Number.isSafeInteger(cdLoad.state?.savedAtMs) &&
+        cdLoad.state?.finishedSeenAtMs === null &&
+        !$("cdSavedNote").classList.contains("hidden") &&
+        txt("cdSavedNoteText") === UI_TEXT.cdSavedNote &&
+        txt("cdPhase") === UI_TEXT.cdPhaseCounting &&
+        txt("cdStatus").startsWith("Counting down to 2027-01-01 09:30:00")
+    );
+    await setInput("cdTarget", "", () => updateCountdownLive());
+    $("cdTarget").dispatchEvent(new Event("change", { bubbles: true }));
+    window.dispatchEvent(new Event("pagehide"));
+    await cdWriteChain;
+    cdLoad = await invoke("countdown_load");
+    check(
+      "countdown-empty-field-keeps-record",
+      cdLoad.state?.targetDate === "2027-01-01" && cdLoad.state?.targetTime === "09:30"
+    );
+    setField("cdTime", "");
+    await restoreSavedCountdown();
+    await updateCountdownLive();
+    check(
+      "countdown-restore-future",
+      $("cdTarget").value === "2027-01-01" &&
+        $("cdTime").value === "09:30" &&
+        txt("cdClock") === "45d 23h 30m 00s" &&
+        txt("cdPhase") === UI_TEXT.cdPhaseRestored &&
+        txt("cdStatus").startsWith("Countdown restored: 45 days, 23 hours, 30 minutes left until 2027-01-01")
+    );
+    cellOf("cdCalGrid", "2027-01-15")?.click();
+    check(
+      "calendar-click-countdown-saves",
+      await waitUntil(async () => {
+        await cdWriteChain;
+        const l = await invoke("countdown_load");
+        return (
+          $("cdTarget").value === "2027-01-15" &&
+          $("cdTime").value === "09:30" &&
+          l.state?.targetDate === "2027-01-15" &&
+          l.state?.targetTime === "09:30" &&
+          txt("cdPhase") === UI_TEXT.cdPhaseCounting
+        );
+      })
+    );
+    await commit("cdTime", "");
+    await commit("cdTarget", "2026-01-01");
+    cdLoad = await invoke("countdown_load");
+    const seenWhileOpen = document.visibilityState === "visible";
+    check(
+      "countdown-finished-while-open",
+      txt("cdPhase") === UI_TEXT.cdPhaseFinished &&
+        $("cdPhase").classList.contains("is-finished") &&
+        txt("cdStatus").startsWith("Finished: 2026-01-01 00:00:00") &&
+        cdLoad.state?.targetDate === "2026-01-01" &&
+        (!seenWhileOpen || Number.isSafeInteger(cdLoad.state?.finishedSeenAtMs))
+    );
+    if (seenWhileOpen) {
+      setField("cdTarget", "");
+      await restoreSavedCountdown();
+      await updateCountdownLive();
+      check(
+        "countdown-finished-while-open-then-closed",
+        txt("cdPhase") === UI_TEXT.cdPhaseFinished && txt("cdStatus").startsWith("Finished: ")
+      );
+    }
+    await invoke("countdown_save", {
+      state: {
+        schemaVersion: 1,
+        targetDate: "2026-11-16",
+        targetTime: "09:58",
+        savedAtMs: 1,
+        finishedSeenAtMs: null
+      }
+    });
+    setField("cdTarget", "");
+    setField("cdTime", "");
+    await restoreSavedCountdown();
+    await updateCountdownLive();
+    await cdWriteChain;
+    cdLoad = await invoke("countdown_load");
+    check(
+      "countdown-finished-while-closed",
+      txt("cdPhase") === UI_TEXT.cdPhaseFinishedClosed &&
+        txt("cdStatus").startsWith("Finished while the app was closed: 2026-11-16 09:58:00") &&
+        (document.visibilityState !== "visible" || Number.isSafeInteger(cdLoad.state?.finishedSeenAtMs))
+    );
+    $("cdForgetBtn").click();
+    window.dispatchEvent(new Event("pagehide"));
+    await cdWriteChain;
+    cdLoad = await invoke("countdown_load");
+    check(
+      "countdown-forget-clears",
+      cdLoad.status === "empty" &&
+        cdLoad.state === null &&
+        $("cdSavedNote").classList.contains("hidden") &&
+        $("cdTarget").value === "2026-11-16"
+    );
+    await applyCountdownQuick("plus30");
+    await cdWriteChain;
+    cdLoad = await invoke("countdown_load");
+    check("countdown-quick-pill-saves", cdLoad.state?.targetDate === "2026-12-16");
+    await resetCard("countdown");
+    await cdWriteChain;
+    cdLoad = await invoke("countdown_load");
+    check(
+      "countdown-reset-clears",
+      cdLoad.status === "empty" && $("cdTarget").value === "" && txt("cdPhase") === ""
+    );
+
+    // History: read-only state, then clear, add, filter, restore, delete, clear
+    const historyState = await invoke("history_state");
+    check(
+      "history-state-writable",
+      historyState?.readOnly === false &&
+        historyState?.reason === null &&
+        $("historyReadOnlyBanner").classList.contains("hidden") &&
+        !$("clearHistoryBtn").disabled
+    );
+    applyHistoryState({ readOnly: true, reason: "corrupt" });
+    renderHistory();
+    check(
+      "history-read-only-banner",
+      !$("historyReadOnlyBanner").classList.contains("hidden") &&
+        txt("historyReadOnlyText") === UI_TEXT.historyReadOnly &&
+        txt("historyReadOnlyDetail") === UI_TEXT.historyReasonCorrupt &&
+        $("clearHistoryBtn").disabled === true &&
+        Array.from(document.querySelectorAll(".history-delete-btn")).every((b) => b.disabled)
+    );
+    $("historyResetBtn").click();
+    check(
+      "history-reset-two-step",
+      !$("historyResetConfirm").classList.contains("hidden") &&
+        $("historyResetBtn").classList.contains("hidden")
+    );
+    $("cancelHistoryResetBtn").click();
+    $("historyRetryBtn").click();
+    check(
+      "history-retry-writable",
+      await waitUntil(
+        () =>
+          historyReadOnly === false &&
+          $("historyReadOnlyBanner").classList.contains("hidden") &&
+          !$("clearHistoryBtn").disabled
+      )
+    );
     $("clearHistoryBtn").click();
     $("confirmClearHistoryBtn").click();
     check("history-cleared-start", await waitUntil(() => txt("historyCount") === "(0 / 500)"));
@@ -3393,6 +4418,10 @@ async function initialize() {
 
   await loadSettingsAndMaybeCheckUpdates(smokeEnabled === true);
   await refreshCalendarInfo();
+  // A2: the saved countdown fills the empty card before the first render, so
+  // the exact time left shows at once (smoke mode reads the in-memory store).
+  await restoreSavedCountdown();
+  resetBizPickTarget();
 
   await Promise.all([
     updateBetweenLive(),
@@ -3407,13 +4436,24 @@ async function initialize() {
   ]);
 
   window.setInterval(checkDayRollover, ROLLOVER_CHECK_MS);
+  const resumeVisible = () => {
+    checkDayRollover();
+    if (cdActive) updateCountdownLive({ fromTick: true });
+  };
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") {
       clearCountdownTimer();
+      persistCountdown({ explicit: false });
       return;
     }
-    checkDayRollover();
-    if (cdActive) updateCountdownLive({ fromTick: true });
+    resumeVisible();
+  });
+  window.addEventListener("pagehide", () => {
+    persistCountdown({ explicit: false });
+  });
+  // Back/forward cache: the page returns without a visibilitychange.
+  window.addEventListener("pageshow", (event) => {
+    if (event.persisted) resumeVisible();
   });
 
   $("betweenStart").focus();

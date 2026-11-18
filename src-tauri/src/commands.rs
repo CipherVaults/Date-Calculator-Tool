@@ -27,7 +27,7 @@ use serde_json::Value;
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
-use crate::{HistoryState, SettingsState, SmokeState};
+use crate::{CountdownStore, HistoryState, SettingsState, SmokeState};
 
 pub const HISTORY_MAX_ENTRIES: usize = 500;
 const HISTORY_MAX_FILE_BYTES: usize = 1024 * 1024;
@@ -350,25 +350,142 @@ fn write_atomic_private(path: &Path, data: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-pub fn load_history_from_path(path: &Path) -> Vec<HistoryEntry> {
+/// Why history is read-only (plan A3). Serialized as the `reason` string of
+/// `history_state`.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum HistoryReadOnlyReason {
+    /// The file exists but could not be read (sharing violation, lock,
+    /// permission, symlink, not a regular file). Nothing is backed up.
+    ReadError,
+    /// The file is valid JSON but not a v1 history, or an entry failed
+    /// validation. `history.json.bak` was attempted first.
+    Corrupt,
+    /// The file is over the 1 MiB cap. Nothing is backed up.
+    TooLarge,
+    /// The file declares a `schemaVersion` newer than this build reads.
+    /// Never backed up and never written.
+    NewerSchema,
+}
+
+/// What `history_state` / `history_retry` return:
+/// `{"readOnly": bool, "reason": null | "read_error" | …}`.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct HistoryStatus {
+    pub read_only: bool,
+    pub reason: Option<HistoryReadOnlyReason>,
+}
+
+impl HistoryStatus {
+    fn from_reason(reason: Option<HistoryReadOnlyReason>) -> Self {
+        Self {
+            read_only: reason.is_some(),
+            reason,
+        }
+    }
+}
+
+/// The outcome of loading `history.json` (plan A3). `entries` is what could
+/// be loaded safely; when `read_only` is set, nothing may write the file
+/// until the user retries successfully or explicitly starts a new history.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HistoryLoad {
+    pub entries: Vec<HistoryEntry>,
+    pub read_only: Option<HistoryReadOnlyReason>,
+}
+
+impl HistoryLoad {
+    fn read_only(reason: HistoryReadOnlyReason) -> Self {
+        Self {
+            entries: Vec::new(),
+            read_only: Some(reason),
+        }
+    }
+
+    /// The id the next new entry gets: one past the largest loaded id.
+    pub fn next_id(&self) -> u64 {
+        self.entries
+            .iter()
+            .map(|entry| entry.id)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1)
+    }
+}
+
+/// Reads a `schemaVersion` newer than `current` from a raw JSON object, so a
+/// file written by a newer build is recognised before any strict parse.
+fn declares_newer_schema(value: &Value, current: u64) -> bool {
+    value
+        .get("schemaVersion")
+        .and_then(Value::as_u64)
+        .is_some_and(|version| version > current)
+}
+
+/// Plan A3: a history that cannot be read safely is never replaced by an
+/// empty one. Only a missing file starts an empty, writable history.
+///
+/// - `NotFound` → empty, writable.
+/// - Any other read failure (lock, permission, symlink, not a regular file)
+///   → read-only `read_error`; over the cap → read-only `too_large`. No
+///   `.bak` is attempted: the bytes were never read.
+/// - A newer `schemaVersion` object → read-only `newer_schema`, no `.bak`.
+/// - Invalid JSON, a wrong shape, or any entry dropped by validation (or
+///   past the 500-entry cap) → `history.json.bak` once, then read-only
+///   `corrupt`. The entries that did validate are still shown.
+pub fn load_history_from_path(path: &Path) -> HistoryLoad {
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return HistoryLoad::default(),
+        Err(_) => return HistoryLoad::read_only(HistoryReadOnlyReason::ReadError),
+    };
+    if meta.file_type().is_file() && meta.len() > HISTORY_MAX_FILE_BYTES as u64 {
+        return HistoryLoad::read_only(HistoryReadOnlyReason::TooLarge);
+    }
     let Ok(bytes) = read_regular_file_limited(path, HISTORY_MAX_FILE_BYTES, "history file") else {
-        return Vec::new();
+        return HistoryLoad::read_only(HistoryReadOnlyReason::ReadError);
     };
-    let Ok(entries) = serde_json::from_slice::<Vec<HistoryEntry>>(&bytes) else {
-        return Vec::new();
+    let corrupt = |entries: Vec<HistoryEntry>| {
+        backup_corrupt_file_once(path, HISTORY_MAX_FILE_BYTES);
+        HistoryLoad {
+            entries,
+            read_only: Some(HistoryReadOnlyReason::Corrupt),
+        }
     };
-    entries
+    let Ok(value) = serde_json::from_slice::<Value>(&bytes) else {
+        return corrupt(Vec::new());
+    };
+    if value.is_object() && declares_newer_schema(&value, 1) {
+        return HistoryLoad::read_only(HistoryReadOnlyReason::NewerSchema);
+    }
+    if !value.is_array() {
+        return corrupt(Vec::new());
+    }
+    let Ok(stored) = Vec::<HistoryEntry>::deserialize(value) else {
+        return corrupt(Vec::new());
+    };
+    let stored_len = stored.len();
+    let entries: Vec<HistoryEntry> = stored
         .into_iter()
         .filter(|entry| validate_history_entry(entry).is_ok())
         .take(HISTORY_MAX_ENTRIES)
-        .collect()
+        .collect();
+    if entries.len() != stored_len {
+        return corrupt(entries);
+    }
+    HistoryLoad {
+        entries,
+        read_only: None,
+    }
 }
 
-pub fn load_history_from_disk(app: &AppHandle) -> Vec<HistoryEntry> {
-    let Ok(path) = history_file_path(app) else {
-        return Vec::new();
-    };
-    load_history_from_path(&path)
+pub fn load_history_from_disk(app: &AppHandle) -> HistoryLoad {
+    match history_file_path(app) {
+        Ok(path) => load_history_from_path(&path),
+        // Without a path nothing can be read or written safely.
+        Err(_) => HistoryLoad::read_only(HistoryReadOnlyReason::ReadError),
+    }
 }
 
 fn serialize_history(entries: &[HistoryEntry]) -> Result<Vec<u8>, String> {
@@ -407,27 +524,27 @@ fn backup_path(path: &Path) -> Option<PathBuf> {
     Some(path.with_file_name(name))
 }
 
-/// FROZEN §12 / spec 2 §8.3: copies a corrupt or invalid settings file once
-/// to a single `settings.json.bak` before it can be overwritten.
+/// FROZEN §12 / spec 2 §8.3 / plan A2–A3: copies a corrupt or invalid file
+/// (settings, history or countdown) once to a single `<name>.bak` before it
+/// can be overwritten.
 ///
 /// "Once" is per corrupt file: repeated loads of the same bad bytes write
 /// nothing new, but a later, different corruption replaces an older `.bak`,
-/// so the custom holidays of the most recent bad file are never lost to the
-/// next save. A `.bak` that is a symlink, a directory, unreadable or over the
-/// 1 MiB cap is left alone, and symlinked, non-regular or over-cap settings
-/// files are never copied. Returns whether a backup was written.
-fn backup_corrupt_file_once(path: &Path) -> bool {
+/// so the most recent bad file is never lost to the next save. A `.bak` that
+/// is a symlink, a directory, unreadable or over `max_bytes` is left alone,
+/// and symlinked, non-regular or over-cap source files are never copied.
+/// Returns whether a backup was written.
+fn backup_corrupt_file_once(path: &Path, max_bytes: usize) -> bool {
     let Some(bak) = backup_path(path) else {
         return false;
     };
-    let Ok(bytes) = read_regular_file_limited(path, SETTINGS_BACKUP_MAX_BYTES, "settings file")
-    else {
+    let Ok(bytes) = read_regular_file_limited(path, max_bytes, "file to back up") else {
         return false;
     };
     match std::fs::symlink_metadata(&bak) {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
         Ok(meta) if meta.file_type().is_file() => {
-            match read_regular_file_limited(&bak, SETTINGS_BACKUP_MAX_BYTES, "settings backup") {
+            match read_regular_file_limited(&bak, max_bytes, "existing backup") {
                 Ok(existing) if existing != bytes => {}
                 _ => return false,
             }
@@ -435,6 +552,68 @@ fn backup_corrupt_file_once(path: &Path) -> bool {
         _ => return false,
     }
     write_atomic_private(&bak, &bytes).is_ok()
+}
+
+/// True only when nothing exists at `p` (any other lookup error is not
+/// "free": the name may still hold something that must not be replaced).
+fn path_is_missing(p: &Path) -> bool {
+    matches!(
+        std::fs::symlink_metadata(p),
+        Err(ref err) if err.kind() == std::io::ErrorKind::NotFound
+    )
+}
+
+/// True when `path` and its `.bak` are both readable regular files with the
+/// same bytes: the current bytes are already kept, so replacing `path` loses
+/// nothing.
+fn already_backed_up(path: &Path, max_bytes: usize) -> bool {
+    let Some(bak) = backup_path(path) else {
+        return false;
+    };
+    match (
+        read_regular_file_limited(path, max_bytes, "file to replace"),
+        read_regular_file_limited(&bak, max_bytes, "existing backup"),
+    ) {
+        (Ok(current), Ok(kept)) => current == kept,
+        _ => false,
+    }
+}
+
+/// `history.json` → a free `history.json.bak-<ms>` (or `-<ms>-<n>`), so a
+/// second backup never replaces the first.
+fn unique_backup_path(path: &Path) -> Option<PathBuf> {
+    let bak = backup_path(path)?;
+    let base = bak.file_name()?.to_os_string();
+    let ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    (0..100u32).find_map(|n| {
+        let mut name = base.clone();
+        if n == 0 {
+            name.push(format!("-{ms}"));
+        } else {
+            name.push(format!("-{ms}-{n}"));
+        }
+        let candidate = bak.with_file_name(name);
+        path_is_missing(&candidate).then_some(candidate)
+    })
+}
+
+/// Keeps a file that cannot be read or copied safely by renaming it aside
+/// whole (never copying, truncating or replacing anything): to `<name>.bak`
+/// when that name is free, else to a fresh `unique_backup_path`. A symlink
+/// is moved as a link; its target is never touched.
+fn move_aside(path: &Path) -> Result<PathBuf, String> {
+    let bak = backup_path(path).ok_or_else(|| "path has no file name".to_string())?;
+    let target = if path_is_missing(&bak) {
+        bak
+    } else {
+        unique_backup_path(path).ok_or_else(|| "no free backup name".to_string())?
+    };
+    std::fs::rename(path, &target)
+        .map_err(|err| format!("failed to move the file aside: {err}"))?;
+    Ok(target)
 }
 
 /// Parses and validates a settings object (from the file or from the UI).
@@ -477,7 +656,7 @@ pub fn load_settings_from_path(path: &Path) -> AppSettings {
     match parsed {
         Ok(settings) => settings,
         Err(_) => {
-            backup_corrupt_file_once(path);
+            backup_corrupt_file_once(path, SETTINGS_BACKUP_MAX_BYTES);
             AppSettings::fail_closed()
         }
     }
@@ -497,6 +676,258 @@ fn persist_settings_to_path(path: &Path, settings: &AppSettings) -> Result<(), S
         return Err("serialized settings exceed max allowed file size".to_string());
     }
     write_atomic_private(path, &data)
+}
+
+// ---------------------------------------------------------------------------
+// Countdown persistence (plan A2)
+// ---------------------------------------------------------------------------
+
+/// `countdown.json`: one small record, kept apart from `settings.json` so a
+/// bad countdown can never fail settings closed (and the reverse).
+const COUNTDOWN_MAX_FILE_BYTES: usize = 1024;
+pub const COUNTDOWN_SCHEMA_VERSION: u64 = 1;
+/// Timestamps are written by JavaScript (`Date.now()`), so they must stay
+/// exact JS numbers: at most `Number.MAX_SAFE_INTEGER`.
+const MAX_SAFE_JS_INTEGER: u64 = (1 << 53) - 1;
+/// The newer-schema refusal `countdown_save` returns.
+pub const COUNTDOWN_NEWER_SCHEMA: &str = "countdown_newer_schema";
+/// The refusal `countdown_save` / `countdown_clear` return for an existing
+/// file that is over the cap or cannot be read.
+pub const COUNTDOWN_UNREADABLE: &str = "countdown_unreadable";
+/// How much of an over-cap countdown file is read to look for a newer
+/// `schemaVersion` before it is treated as invalid.
+const COUNTDOWN_SNIFF_MAX_BYTES: usize = 64 * 1024;
+
+/// The saved countdown target. `targetTime` is `""` or `HH:MM`;
+/// `finishedSeenAtMs` is `null` until the UI first shows it finished.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+#[serde(rename_all = "camelCase")]
+pub struct CountdownState {
+    pub schema_version: u64,
+    pub target_date: String,
+    pub target_time: String,
+    pub saved_at_ms: u64,
+    pub finished_seen_at_ms: Option<u64>,
+}
+
+/// `countdown_load` status strings.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum CountdownLoadStatus {
+    /// A valid v1 record.
+    Ok,
+    /// No record.
+    Empty,
+    /// Written by a newer build: ignored, never written or backed up.
+    Newer,
+    /// Invalid: `countdown.json.bak` was attempted (an over-cap file is
+    /// renamed aside instead), the record is ignored.
+    Corrupt,
+    /// Exists but could not be read (lock, permission, symlink, not a
+    /// regular file, or over the cap and could not be moved aside).
+    Unreadable,
+}
+
+/// `{"state": CountdownState | null, "status": "ok" | "empty" | …}`.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CountdownLoad {
+    pub state: Option<CountdownState>,
+    pub status: CountdownLoadStatus,
+}
+
+impl CountdownLoad {
+    fn without_state(status: CountdownLoadStatus) -> Self {
+        Self {
+            state: None,
+            status,
+        }
+    }
+}
+
+pub fn countdown_file_path(app: &AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|err| format!("failed to resolve app data dir: {err}"))?;
+    Ok(dir.join("countdown.json"))
+}
+
+fn input_kind(key: &str) -> Option<InputKind> {
+    INPUT_KEYS
+        .iter()
+        .find(|(name, _)| *name == key)
+        .map(|(_, kind)| *kind)
+}
+
+/// Validates a countdown record exactly like a history countdown entry's
+/// inputs (the shared `INPUT_KEYS` validators), plus the record's own rules:
+/// schema 1, a time of `""` or exactly `HH:MM`, JS-safe timestamps.
+pub fn validate_countdown_state(state: &CountdownState) -> Result<(), &'static str> {
+    if state.schema_version != COUNTDOWN_SCHEMA_VERSION {
+        return Err("unsupported countdown schemaVersion");
+    }
+    let date_kind = input_kind("targetDate").ok_or("invalid countdown targetDate")?;
+    let time_kind = input_kind("targetTime").ok_or("invalid countdown targetTime")?;
+    validate_input_value(date_kind, &state.target_date)
+        .map_err(|_| "invalid countdown targetDate")?;
+    // The engine also accepts `HH:MM:SS`; the countdown card stores minutes.
+    if !(state.target_time.is_empty() || state.target_time.len() == 5) {
+        return Err("invalid countdown targetTime");
+    }
+    validate_input_value(time_kind, &state.target_time)
+        .map_err(|_| "invalid countdown targetTime")?;
+    let finished = state.finished_seen_at_ms.unwrap_or(0);
+    if state.saved_at_ms > MAX_SAFE_JS_INTEGER || finished > MAX_SAFE_JS_INTEGER {
+        return Err("countdown timestamp out of range");
+    }
+    Ok(())
+}
+
+/// Parses a countdown record from raw JSON. `schemaVersion` is read first,
+/// so a newer record is recognised without a strict parse.
+fn parse_countdown_value(value: Value) -> Result<CountdownState, CountdownLoadStatus> {
+    if !value.is_object() {
+        return Err(CountdownLoadStatus::Corrupt);
+    }
+    if declares_newer_schema(&value, COUNTDOWN_SCHEMA_VERSION) {
+        return Err(CountdownLoadStatus::Newer);
+    }
+    if value.get("schemaVersion").and_then(Value::as_u64) != Some(COUNTDOWN_SCHEMA_VERSION) {
+        return Err(CountdownLoadStatus::Corrupt);
+    }
+    let state = CountdownState::deserialize(value).map_err(|_| CountdownLoadStatus::Corrupt)?;
+    validate_countdown_state(&state).map_err(|_| CountdownLoadStatus::Corrupt)?;
+    Ok(state)
+}
+
+/// True when `bytes` are a JSON object that declares a newer schema.
+fn countdown_bytes_are_newer(bytes: &[u8]) -> bool {
+    serde_json::from_slice::<Value>(bytes).is_ok_and(|value| {
+        value.is_object() && declares_newer_schema(&value, COUNTDOWN_SCHEMA_VERSION)
+    })
+}
+
+/// True when an over-cap countdown file still declares a newer schema: a
+/// newer build may write a larger record, so its `schemaVersion` is read from
+/// up to `COUNTDOWN_SNIFF_MAX_BYTES` before the file is treated as invalid.
+fn oversize_countdown_is_newer(path: &Path) -> bool {
+    read_regular_file_limited(path, COUNTDOWN_SNIFF_MAX_BYTES, "countdown file")
+        .is_ok_and(|bytes| countdown_bytes_are_newer(&bytes))
+}
+
+/// Plan A2: `countdown_save` and `countdown_clear` replace or remove only a
+/// missing file, a symlink (never written through: `write_atomic_private`
+/// refuses it, clear removes the link itself) or a readable record of this
+/// schema, valid or corrupt (a corrupt one was backed up at load). A
+/// newer-schema record, a file over the cap or one that cannot be read is
+/// refused here, whatever the UI believes.
+fn countdown_slot_replaceable(path: &Path) -> Result<(), String> {
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err(COUNTDOWN_UNREADABLE.to_string()),
+    };
+    if meta.file_type().is_symlink() {
+        return Ok(());
+    }
+    if meta.file_type().is_file() && meta.len() > COUNTDOWN_MAX_FILE_BYTES as u64 {
+        return Err(if oversize_countdown_is_newer(path) {
+            COUNTDOWN_NEWER_SCHEMA
+        } else {
+            COUNTDOWN_UNREADABLE
+        }
+        .to_string());
+    }
+    let bytes = read_regular_file_limited(path, COUNTDOWN_MAX_FILE_BYTES, "countdown file")
+        .map_err(|_| COUNTDOWN_UNREADABLE.to_string())?;
+    if countdown_bytes_are_newer(&bytes) {
+        return Err(COUNTDOWN_NEWER_SCHEMA.to_string());
+    }
+    Ok(())
+}
+
+/// Plan A2, a regular file over the 1 KiB cap. This build never writes one,
+/// so unless it declares a newer schema (left alone, status `newer`) it is
+/// invalid. Its bytes are too large to copy into `countdown.json.bak`, so
+/// the file is renamed aside whole (`move_aside`) and the slot becomes
+/// writable again (status `corrupt`). If it cannot be moved it stays
+/// `unreadable` and untouched.
+fn load_oversize_countdown(path: &Path) -> CountdownLoad {
+    if oversize_countdown_is_newer(path) {
+        return CountdownLoad::without_state(CountdownLoadStatus::Newer);
+    }
+    match move_aside(path) {
+        Ok(_) => CountdownLoad::without_state(CountdownLoadStatus::Corrupt),
+        Err(_) => CountdownLoad::without_state(CountdownLoadStatus::Unreadable),
+    }
+}
+
+pub fn load_countdown_from_path(path: &Path) -> CountdownLoad {
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_file() && meta.len() > COUNTDOWN_MAX_FILE_BYTES as u64 => {
+            return load_oversize_countdown(path);
+        }
+        Ok(_) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return CountdownLoad::without_state(CountdownLoadStatus::Empty);
+        }
+        Err(_) => return CountdownLoad::without_state(CountdownLoadStatus::Unreadable),
+    }
+    let Ok(bytes) = read_regular_file_limited(path, COUNTDOWN_MAX_FILE_BYTES, "countdown file")
+    else {
+        return CountdownLoad::without_state(CountdownLoadStatus::Unreadable);
+    };
+    let parsed = serde_json::from_slice::<Value>(&bytes)
+        .map_err(|_| CountdownLoadStatus::Corrupt)
+        .and_then(parse_countdown_value);
+    match parsed {
+        Ok(state) => CountdownLoad {
+            state: Some(state),
+            status: CountdownLoadStatus::Ok,
+        },
+        Err(CountdownLoadStatus::Corrupt) => {
+            backup_corrupt_file_once(path, COUNTDOWN_MAX_FILE_BYTES);
+            CountdownLoad::without_state(CountdownLoadStatus::Corrupt)
+        }
+        Err(status) => CountdownLoad::without_state(status),
+    }
+}
+
+fn serialize_countdown(state: &CountdownState) -> Result<Vec<u8>, String> {
+    validate_countdown_state(state).map_err(str::to_string)?;
+    let data =
+        serde_json::to_vec(state).map_err(|err| format!("failed to serialize countdown: {err}"))?;
+    if data.len() > COUNTDOWN_MAX_FILE_BYTES {
+        return Err("serialized countdown exceeds max allowed file size".to_string());
+    }
+    Ok(data)
+}
+
+fn persist_countdown_to_path(path: &Path, state: &CountdownState) -> Result<(), String> {
+    let data = serialize_countdown(state)?;
+    countdown_slot_replaceable(path)?;
+    write_atomic_private(path, &data)
+}
+
+/// Removes `countdown.json` (never its `.bak`, never anything else). A
+/// missing file is already clear; a newer-schema, over-cap or unreadable
+/// record is refused and left in place (`countdown_slot_replaceable`).
+fn clear_countdown_at_path(path: &Path) -> Result<(), String> {
+    match std::fs::symlink_metadata(path) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(format!("failed to inspect countdown file: {err}")),
+        Ok(meta) if meta.file_type().is_dir() => {
+            Err("countdown path is not a regular file".to_string())
+        }
+        Ok(_) => {
+            countdown_slot_replaceable(path)?;
+            // A symlink is removed as a link; its target is never touched.
+            std::fs::remove_file(path)
+                .map_err(|err| format!("failed to remove countdown file: {err}"))
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -927,6 +1358,23 @@ fn history_list_state(state: &HistoryState) -> Result<Vec<HistoryEntry>, String>
     Ok(entries.clone())
 }
 
+/// The refusal every history write returns while history is read-only.
+pub const HISTORY_READ_ONLY: &str = "history_read_only";
+
+/// Errors with [`HISTORY_READ_ONLY`] while history is read-only (plan A3).
+/// Callers hold the `entries` lock first, so the flag cannot change between
+/// this check and their write.
+fn ensure_history_writable(state: &HistoryState) -> Result<(), String> {
+    let read_only = state
+        .read_only
+        .lock()
+        .map_err(|_| "history lock poisoned".to_string())?;
+    if read_only.is_some() {
+        return Err(HISTORY_READ_ONLY.to_string());
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub fn history_list(state: State<'_, HistoryState>) -> Result<Vec<HistoryEntry>, String> {
     history_list_state(&state)
@@ -947,6 +1395,7 @@ where
         .entries
         .lock()
         .map_err(|_| "history lock poisoned".to_string())?;
+    ensure_history_writable(state)?;
 
     let timestamp_ms = now_millis();
 
@@ -1023,6 +1472,7 @@ where
         .entries
         .lock()
         .map_err(|_| "history lock poisoned".to_string())?;
+    ensure_history_writable(state)?;
 
     let mut next_entries = entries.clone();
     let prev_len = next_entries.len();
@@ -1060,6 +1510,7 @@ where
         .entries
         .lock()
         .map_err(|_| "history lock poisoned".to_string())?;
+    ensure_history_writable(state)?;
 
     if !state.in_memory_only {
         let path = resolve_path()?;
@@ -1076,6 +1527,225 @@ pub fn history_clear(
     state: State<'_, HistoryState>,
 ) -> Result<Vec<HistoryEntry>, String> {
     history_clear_with_path(&state, || history_file_path(&app))
+}
+
+fn history_status(state: &HistoryState) -> Result<HistoryStatus, String> {
+    let read_only = state
+        .read_only
+        .lock()
+        .map_err(|_| "history lock poisoned".to_string())?;
+    Ok(HistoryStatus::from_reason(*read_only))
+}
+
+#[tauri::command]
+pub fn history_state(state: State<'_, HistoryState>) -> Result<HistoryStatus, String> {
+    history_status(&state)
+}
+
+/// Reloads `history.json` (the banner's Retry). A successful load makes
+/// history writable again; a failed one keeps (or makes) it read-only.
+fn history_retry_with_path<F>(
+    state: &HistoryState,
+    resolve_path: F,
+) -> Result<HistoryStatus, String>
+where
+    F: FnOnce() -> Result<PathBuf, String>,
+{
+    let mut entries = state
+        .entries
+        .lock()
+        .map_err(|_| "history lock poisoned".to_string())?;
+    if state.in_memory_only {
+        return history_status(state);
+    }
+    let load = match resolve_path() {
+        Ok(path) => load_history_from_path(&path),
+        Err(_) => HistoryLoad::read_only(HistoryReadOnlyReason::ReadError),
+    };
+    let mut next_id = state
+        .next_id
+        .lock()
+        .map_err(|_| "history id lock poisoned".to_string())?;
+    let mut read_only = state
+        .read_only
+        .lock()
+        .map_err(|_| "history lock poisoned".to_string())?;
+    // Ids never go backwards, so a stale UI row can never alias a new entry.
+    *next_id = (*next_id).max(load.next_id());
+    *entries = load.entries;
+    *read_only = load.read_only;
+    Ok(HistoryStatus::from_reason(*read_only))
+}
+
+#[tauri::command]
+pub fn history_retry(
+    app: AppHandle,
+    state: State<'_, HistoryState>,
+) -> Result<HistoryStatus, String> {
+    history_retry_with_path(&state, || history_file_path(&app))
+}
+
+/// The banner's confirmed "Start a new history" (plan A3). Only allowed while
+/// read-only. The current file's bytes are never discarded unless an
+/// identical copy is already in `history.json.bak` (the corrupt case, copied
+/// at load): otherwise the file is renamed aside first, to `history.json.bak`
+/// when that name is free and to a fresh `history.json.bak-<ms>` when it is
+/// not (an existing backup is never replaced). Then an empty history is
+/// written and history becomes writable. Any failure keeps the read-only
+/// state.
+fn history_reset_with_path<F>(state: &HistoryState, resolve_path: F) -> Result<(), String>
+where
+    F: FnOnce() -> Result<PathBuf, String>,
+{
+    let mut entries = state
+        .entries
+        .lock()
+        .map_err(|_| "history lock poisoned".to_string())?;
+    let mut read_only = state
+        .read_only
+        .lock()
+        .map_err(|_| "history lock poisoned".to_string())?;
+    if read_only.is_none() {
+        return Err("history_not_read_only".to_string());
+    }
+    if !state.in_memory_only {
+        let path = resolve_path()?;
+        if !path_is_missing(&path) && !already_backed_up(&path, HISTORY_MAX_FILE_BYTES) {
+            move_aside(&path).map_err(|err| format!("failed to keep the old history: {err}"))?;
+        }
+        persist_history_to_path(&path, &[])?;
+    }
+    entries.clear();
+    *read_only = None;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn history_reset(app: AppHandle, state: State<'_, HistoryState>) -> Result<(), String> {
+    history_reset_with_path(&state, || history_file_path(&app))
+}
+
+// ---------------------------------------------------------------------------
+// Countdown commands (plan A2)
+// ---------------------------------------------------------------------------
+
+fn countdown_load_with_path<F>(
+    store: &CountdownStore,
+    resolve_path: F,
+) -> Result<CountdownLoad, String>
+where
+    F: FnOnce() -> Result<PathBuf, String>,
+{
+    let memory = store
+        .state
+        .lock()
+        .map_err(|_| "countdown lock poisoned".to_string())?;
+    if store.in_memory_only {
+        return Ok(match memory.as_ref() {
+            Some(state) => CountdownLoad {
+                state: Some(state.clone()),
+                status: CountdownLoadStatus::Ok,
+            },
+            None => CountdownLoad::without_state(CountdownLoadStatus::Empty),
+        });
+    }
+    Ok(match resolve_path() {
+        Ok(path) => load_countdown_from_path(&path),
+        Err(_) => CountdownLoad::without_state(CountdownLoadStatus::Unreadable),
+    })
+}
+
+#[tauri::command]
+pub fn countdown_load(
+    app: AppHandle,
+    store: State<'_, CountdownStore>,
+) -> Result<CountdownLoad, String> {
+    countdown_load_with_path(&store, || countdown_file_path(&app))
+}
+
+fn countdown_save_with_path<F>(
+    store: &CountdownStore,
+    state: CountdownState,
+    resolve_path: F,
+) -> Result<(), String>
+where
+    F: FnOnce() -> Result<PathBuf, String>,
+{
+    validate_countdown_state(&state).map_err(str::to_string)?;
+    let mut memory = store
+        .state
+        .lock()
+        .map_err(|_| "countdown lock poisoned".to_string())?;
+    if !store.in_memory_only {
+        let path = resolve_path()?;
+        persist_countdown_to_path(&path, &state)?;
+    }
+    *memory = Some(state);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn countdown_save(
+    app: AppHandle,
+    store: State<'_, CountdownStore>,
+    state: CountdownState,
+) -> Result<(), String> {
+    countdown_save_with_path(&store, state, || countdown_file_path(&app))
+}
+
+fn countdown_clear_with_path<F>(store: &CountdownStore, resolve_path: F) -> Result<(), String>
+where
+    F: FnOnce() -> Result<PathBuf, String>,
+{
+    let mut memory = store
+        .state
+        .lock()
+        .map_err(|_| "countdown lock poisoned".to_string())?;
+    if !store.in_memory_only {
+        let path = resolve_path()?;
+        clear_countdown_at_path(&path)?;
+    }
+    *memory = None;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn countdown_clear(app: AppHandle, store: State<'_, CountdownStore>) -> Result<(), String> {
+    countdown_clear_with_path(&store, || countdown_file_path(&app))
+}
+
+/// The smoke test's backend check (run before `SMOKE_TEST_OK`): a
+/// save → load → clear → load round trip through the in-memory countdown
+/// store, so the validators and the command paths run on every CI build.
+/// Refuses to run against the disk store.
+fn smoke_countdown_roundtrip(store: &CountdownStore) -> Result<(), String> {
+    if !store.in_memory_only {
+        return Err("countdown store is not in-memory".to_string());
+    }
+    let no_disk = || Err::<PathBuf, String>("smoke mode never touches the disk".to_string());
+    let sample = CountdownState {
+        schema_version: COUNTDOWN_SCHEMA_VERSION,
+        target_date: "2030-01-01".to_string(),
+        target_time: "09:30".to_string(),
+        saved_at_ms: 1_795_400_000_000,
+        finished_seen_at_ms: None,
+    };
+    let mut bad_time = sample.clone();
+    bad_time.target_time = "24:00".to_string();
+    if countdown_save_with_path(store, bad_time, no_disk).is_ok() {
+        return Err("countdown accepted 24:00".to_string());
+    }
+    countdown_save_with_path(store, sample.clone(), no_disk)?;
+    let loaded = countdown_load_with_path(store, no_disk)?;
+    if loaded.status != CountdownLoadStatus::Ok || loaded.state.as_ref() != Some(&sample) {
+        return Err("countdown did not round-trip".to_string());
+    }
+    countdown_clear_with_path(store, no_disk)?;
+    let cleared = countdown_load_with_path(store, no_disk)?;
+    if cleared != CountdownLoad::without_state(CountdownLoadStatus::Empty) {
+        return Err("countdown was not cleared".to_string());
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -1300,6 +1970,7 @@ pub fn is_smoke_test(state: State<'_, SmokeState>) -> bool {
 pub fn report_smoke_result(
     app: AppHandle,
     state: State<'_, SmokeState>,
+    countdown: State<'_, CountdownStore>,
     passed: bool,
     details: String,
 ) -> Result<(), &'static str> {
@@ -1312,13 +1983,16 @@ pub fn report_smoke_result(
         .read_text()
         .map(|text| text == SMOKE_CLIPBOARD_SENTINEL)
         .unwrap_or(false);
+    let countdown_result = smoke_countdown_roundtrip(&countdown);
+    let countdown_ok = countdown_result.is_ok();
 
-    if passed && clipboard_ok {
-        println!("SMOKE_TEST_OK: all renderer, IPC, and clipboard checks passed.");
+    if passed && clipboard_ok && countdown_ok {
+        println!("SMOKE_TEST_OK: all renderer, IPC, clipboard, and countdown checks passed.");
         app.exit(0);
     } else {
+        let countdown_err = countdown_result.err().unwrap_or_default();
         eprintln!(
-            "SMOKE_TEST_FAILED: passed={passed} clipboard_ok={clipboard_ok} details=[{details}]"
+            "SMOKE_TEST_FAILED: passed={passed} clipboard_ok={clipboard_ok} countdown_ok={countdown_ok} countdown=[{countdown_err}] details=[{details}]"
         );
         app.exit(1);
     }
@@ -1330,6 +2004,10 @@ mod tests {
     use super::*;
     use serde_json::json;
     use std::sync::Mutex;
+
+    /// Plan A4: the engine version is decoupled from the app version and
+    /// changes only with engine behaviour (and a golden regeneration).
+    const EXPECTED_ENGINE_VERSION: &str = "1.0.0";
 
     // -----------------------------------------------------------------------
     // Fixtures
@@ -1792,7 +2470,7 @@ mod tests {
         if try_symlink_file(&target, &link).is_some() {
             assert!(read_regular_file_limited(&link, 1024, "history file").is_err());
             assert!(write_atomic_private(&link, b"[]").is_err());
-            assert!(load_history_from_path(&link).is_empty());
+            assert!(load_history_from_path(&link).entries.is_empty());
             // The target is untouched by the refused write.
             assert_eq!(std::fs::read(&target).unwrap(), b"[]");
         }
@@ -1975,6 +2653,7 @@ mod tests {
             in_memory_only: false,
             entries: Mutex::new(Vec::new()),
             next_id: Mutex::new(1),
+            read_only: Mutex::new(None),
         };
 
         // 1. Consecutive dedup preserves id=1 and next_id=2; non-consecutive re-adds as new.
@@ -2019,7 +2698,7 @@ mod tests {
         assert_eq!(capped.len(), HISTORY_MAX_ENTRIES);
         assert_eq!(capped[0].id, (HISTORY_MAX_ENTRIES + 5) as u64);
         assert_eq!(capped[HISTORY_MAX_ENTRIES - 1].id, 6);
-        assert_eq!(load_history_from_path(&history_path), capped);
+        assert_eq!(load_history_from_path(&history_path).entries, capped);
 
         // 3. Delete no-op, targeted delete, and clear round-trip to disk.
         let unchanged =
@@ -2030,17 +2709,18 @@ mod tests {
             history_delete_with_path(&history, 500, || Ok(history_path.clone())).unwrap();
         assert_eq!(after_del.len(), HISTORY_MAX_ENTRIES - 1);
         assert!(!after_del.iter().any(|e| e.id == 500));
-        assert_eq!(load_history_from_path(&history_path), after_del);
+        assert_eq!(load_history_from_path(&history_path).entries, after_del);
 
         let cleared = history_clear_with_path(&history, || Ok(history_path.clone())).unwrap();
         assert!(cleared.is_empty());
-        assert!(load_history_from_path(&history_path).is_empty());
+        assert!(load_history_from_path(&history_path).entries.is_empty());
 
         // 4. saturating_add ID behavior near u64::MAX.
         let max_state = HistoryState {
             in_memory_only: true,
             entries: Mutex::new(Vec::new()),
             next_id: Mutex::new(u64::MAX - 1),
+            read_only: Mutex::new(None),
         };
         let list = history_add_with_path(&max_state, distinct_entry(1), || unreachable!()).unwrap();
         assert_eq!(list[0].id, u64::MAX - 1);
@@ -2107,6 +2787,7 @@ mod tests {
             in_memory_only: true,
             entries: Mutex::new(Vec::new()),
             next_id: Mutex::new(1),
+            read_only: Mutex::new(None),
         };
         let ghost_history = temp.path().join("never-written-history.json");
         history_add_with_path(&mem_only_history, distinct_entry(1), || {
@@ -2127,6 +2808,7 @@ mod tests {
             in_memory_only: false,
             entries: Mutex::new(Vec::new()),
             next_id: Mutex::new(1),
+            read_only: Mutex::new(None),
         };
         let locked_dir = temp.path().join("locked");
         std::fs::create_dir_all(&locked_dir).unwrap();
@@ -2359,9 +3041,9 @@ mod tests {
             serde_json::to_vec(&vec![bad, good.clone()]).unwrap(),
         )
         .unwrap();
-        assert_eq!(load_history_from_path(&mixed_path), vec![good]);
+        assert_eq!(load_history_from_path(&mixed_path).entries, vec![good]);
         std::fs::write(&mixed_path, br#"[{"id":1,"bogus":true}]"#).unwrap();
-        assert!(load_history_from_path(&mixed_path).is_empty());
+        assert!(load_history_from_path(&mixed_path).entries.is_empty());
     }
 
     // -----------------------------------------------------------------------
@@ -2592,6 +3274,7 @@ mod tests {
             in_memory_only: true,
             entries: Mutex::new(Vec::new()),
             next_id: Mutex::new(1),
+            read_only: Mutex::new(None),
         };
         let add_entry = |pairs: &[(&str, &str)]| {
             let mut map: serde_json::Map<String, Value> = sample_inputs("add")
@@ -3205,6 +3888,7 @@ mod tests {
             in_memory_only: false,
             entries: Mutex::new(seeded),
             next_id: Mutex::new(HISTORY_MAX_ENTRIES as u64),
+            read_only: Mutex::new(None),
         };
         let list = history_add_with_path(&state, big_entry(4000), || Ok(path.clone())).unwrap();
         assert!(list.len() < HISTORY_MAX_ENTRIES);
@@ -3215,7 +3899,7 @@ mod tests {
         assert!(list.windows(2).all(|w| w[0].id > w[1].id));
         let size = std::fs::metadata(&path).unwrap().len() as usize;
         assert!(size <= HISTORY_MAX_FILE_BYTES, "{size}");
-        assert_eq!(load_history_from_path(&path), list);
+        assert_eq!(load_history_from_path(&path).entries, list);
     }
 
     #[test]
@@ -3236,6 +3920,916 @@ mod tests {
         assert_eq!(MAX_COPY_LEN, 4096);
         assert_eq!(MAX_HISTORY_COPY_LEN, 1024);
         assert_eq!(HISTORY_MAX_ENTRIES, 500);
-        assert_eq!(date_core::ENGINE_VERSION, env!("CARGO_PKG_VERSION"));
+        assert_eq!(date_core::ENGINE_VERSION, EXPECTED_ENGINE_VERSION);
+    }
+
+    // -----------------------------------------------------------------------
+    // v1.1.0: countdown persistence (plan A2) and history read-only (A3)
+    // -----------------------------------------------------------------------
+
+    fn sample_countdown() -> CountdownState {
+        CountdownState {
+            schema_version: 1,
+            target_date: "2026-12-31".to_string(),
+            target_time: "09:00".to_string(),
+            saved_at_ms: 1_795_400_000_000,
+            finished_seen_at_ms: None,
+        }
+    }
+
+    fn disk_countdown_store() -> CountdownStore {
+        CountdownStore {
+            in_memory_only: false,
+            state: Mutex::new(None),
+        }
+    }
+
+    fn disk_history(read_only: Option<HistoryReadOnlyReason>) -> HistoryState {
+        HistoryState {
+            in_memory_only: false,
+            entries: Mutex::new(Vec::new()),
+            next_id: Mutex::new(1),
+            read_only: Mutex::new(read_only),
+        }
+    }
+
+    fn history_from_load(load: HistoryLoad) -> HistoryState {
+        HistoryState {
+            in_memory_only: false,
+            next_id: Mutex::new(load.next_id()),
+            entries: Mutex::new(load.entries),
+            read_only: Mutex::new(load.read_only),
+        }
+    }
+
+    fn file_names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    fn history_bytes(entries: &[HistoryEntry]) -> Vec<u8> {
+        serde_json::to_vec_pretty(entries).unwrap()
+    }
+
+    #[test]
+    fn countdown_roundtrip() {
+        let temp = TestTempDir::new("date-cd-roundtrip");
+        let path = temp.path().join("countdown.json");
+        let store = disk_countdown_store();
+        let at = || Ok(path.clone());
+
+        // No file: empty, nothing created.
+        let empty = countdown_load_with_path(&store, at).unwrap();
+        assert_eq!(
+            empty,
+            CountdownLoad::without_state(CountdownLoadStatus::Empty)
+        );
+        assert_eq!(
+            serde_json::to_value(&empty).unwrap(),
+            json!({"state": null, "status": "empty"})
+        );
+        assert!(!path.exists());
+
+        // Save → exact compact JSON on disk → load returns it.
+        countdown_save_with_path(&store, sample_countdown(), at).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            r#"{"schemaVersion":1,"targetDate":"2026-12-31","targetTime":"09:00","savedAtMs":1795400000000,"finishedSeenAtMs":null}"#
+        );
+        let loaded = countdown_load_with_path(&store, at).unwrap();
+        assert_eq!(loaded.status, CountdownLoadStatus::Ok);
+        assert_eq!(loaded.state, Some(sample_countdown()));
+        assert_eq!(
+            serde_json::to_value(&loaded).unwrap(),
+            json!({"state": serde_json::to_value(sample_countdown()).unwrap(), "status": "ok"})
+        );
+
+        // finishedSeenAtMs and an all-day target round-trip too.
+        let mut seen = sample_countdown();
+        seen.target_time = String::new();
+        seen.finished_seen_at_ms = Some(1_795_500_000_000);
+        countdown_save_with_path(&store, seen.clone(), at).unwrap();
+        assert_eq!(load_countdown_from_path(&path).state, Some(seen.clone()));
+        assert_eq!(store.state.lock().unwrap().as_ref(), Some(&seen));
+        // A missing finishedSeenAtMs reads as null.
+        std::fs::write(
+            &path,
+            br#"{"schemaVersion":1,"targetDate":"2026-12-31","targetTime":"","savedAtMs":5}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            load_countdown_from_path(&path)
+                .state
+                .unwrap()
+                .finished_seen_at_ms,
+            None
+        );
+
+        // Clear removes the file; clearing again is fine.
+        countdown_clear_with_path(&store, at).unwrap();
+        assert!(!path.exists());
+        countdown_clear_with_path(&store, at).unwrap();
+        assert_eq!(
+            countdown_load_with_path(&store, at).unwrap().status,
+            CountdownLoadStatus::Empty
+        );
+        assert!(store.state.lock().unwrap().is_none());
+
+        // The in-memory (smoke) store never resolves a path.
+        let memory = CountdownStore {
+            in_memory_only: true,
+            state: Mutex::new(None),
+        };
+        let never = || -> Result<PathBuf, String> { unreachable!("smoke store touched disk") };
+        countdown_save_with_path(&memory, sample_countdown(), never).unwrap();
+        assert_eq!(
+            countdown_load_with_path(&memory, never).unwrap().state,
+            Some(sample_countdown())
+        );
+        countdown_clear_with_path(&memory, never).unwrap();
+        assert_eq!(
+            countdown_load_with_path(&memory, never).unwrap().status,
+            CountdownLoadStatus::Empty
+        );
+        assert_eq!(smoke_countdown_roundtrip(&memory), Ok(()));
+        assert!(smoke_countdown_roundtrip(&disk_countdown_store()).is_err());
+        assert_eq!(file_names(temp.path()), Vec::<String>::new());
+    }
+
+    #[test]
+    fn countdown_rejects_unknown_field() {
+        let good = serde_json::to_value(sample_countdown()).unwrap();
+        assert!(serde_json::from_value::<CountdownState>(good.clone()).is_ok());
+        let mut extra = good.clone();
+        extra["label"] = json!("x");
+        assert!(serde_json::from_value::<CountdownState>(extra.clone()).is_err());
+        let mut missing = good.clone();
+        missing.as_object_mut().unwrap().remove("targetTime");
+        assert!(serde_json::from_value::<CountdownState>(missing.clone()).is_err());
+        let mut wrong_type = good.clone();
+        wrong_type["savedAtMs"] = json!("1");
+        assert!(serde_json::from_value::<CountdownState>(wrong_type.clone()).is_err());
+
+        let temp = TestTempDir::new("date-cd-unknown");
+        for (name, value) in [
+            ("extra", extra),
+            ("missing", missing),
+            ("wrong-type", wrong_type),
+        ] {
+            let dir = temp.path().join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("countdown.json");
+            let bytes = serde_json::to_vec(&value).unwrap();
+            std::fs::write(&path, &bytes).unwrap();
+            let load = load_countdown_from_path(&path);
+            assert_eq!(load.status, CountdownLoadStatus::Corrupt, "{name}");
+            assert_eq!(load.state, None, "{name}");
+            assert_eq!(
+                std::fs::read(dir.join("countdown.json.bak")).unwrap(),
+                bytes
+            );
+        }
+    }
+
+    #[test]
+    fn countdown_oversize() {
+        assert_eq!(COUNTDOWN_MAX_FILE_BYTES, 1024);
+        let temp = TestTempDir::new("date-cd-oversize");
+        let path = temp.path().join("countdown.json");
+        let bak = temp.path().join("countdown.json.bak");
+
+        // Exactly at the cap (valid JSON padded with spaces): accepted.
+        let body = serde_json::to_vec(&sample_countdown()).unwrap();
+        let at_cap = [
+            body.as_slice(),
+            &vec![b' '; COUNTDOWN_MAX_FILE_BYTES - body.len()],
+        ]
+        .concat();
+        assert_eq!(at_cap.len(), COUNTDOWN_MAX_FILE_BYTES);
+        std::fs::write(&path, &at_cap).unwrap();
+        assert_eq!(
+            load_countdown_from_path(&path).status,
+            CountdownLoadStatus::Ok
+        );
+
+        // One byte over: never parsed or copied, but renamed aside whole to
+        // the free .bak, so the slot is writable again (status corrupt).
+        let over = [at_cap.as_slice(), b" "].concat();
+        std::fs::write(&path, &over).unwrap();
+        assert_eq!(
+            load_countdown_from_path(&path),
+            CountdownLoad::without_state(CountdownLoadStatus::Corrupt)
+        );
+        assert!(!path.exists());
+        assert_eq!(std::fs::read(&bak).unwrap(), over);
+        let store = disk_countdown_store();
+        countdown_save_with_path(&store, sample_countdown(), || Ok(path.clone())).unwrap();
+        assert_eq!(
+            load_countdown_from_path(&path).status,
+            CountdownLoadStatus::Ok
+        );
+
+        // A second over-cap file with the .bak taken: kept under a fresh
+        // name; the first backup is never replaced.
+        let second = vec![b'x'; COUNTDOWN_MAX_FILE_BYTES + 7];
+        std::fs::write(&path, &second).unwrap();
+        // While it is there, save and clear refuse it.
+        assert_eq!(
+            countdown_save_with_path(&store, sample_countdown(), || Ok(path.clone())),
+            Err(COUNTDOWN_UNREADABLE.to_string())
+        );
+        assert_eq!(
+            countdown_clear_with_path(&store, || Ok(path.clone())),
+            Err(COUNTDOWN_UNREADABLE.to_string())
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), second);
+        assert_eq!(
+            load_countdown_from_path(&path).status,
+            CountdownLoadStatus::Corrupt
+        );
+        assert!(!path.exists());
+        assert_eq!(std::fs::read(&bak).unwrap(), over);
+        let extra: Vec<String> = file_names(temp.path())
+            .into_iter()
+            .filter(|n| n.starts_with("countdown.json.bak-"))
+            .collect();
+        assert_eq!(extra.len(), 1, "{extra:?}");
+        assert_eq!(std::fs::read(temp.path().join(&extra[0])).unwrap(), second);
+
+        // A 2 KiB record that declares a newer schema: recognised as newer,
+        // never moved, written over or removed.
+        let mut newer = br#"{"schemaVersion":2,"targetDate":"2027-01-01","pad":""#.to_vec();
+        newer.extend(vec![b'p'; 2048]);
+        newer.extend(br#""}"#);
+        std::fs::write(&path, &newer).unwrap();
+        assert_eq!(
+            load_countdown_from_path(&path),
+            CountdownLoad::without_state(CountdownLoadStatus::Newer)
+        );
+        assert_eq!(
+            countdown_save_with_path(&store, sample_countdown(), || Ok(path.clone())),
+            Err(COUNTDOWN_NEWER_SCHEMA.to_string())
+        );
+        assert_eq!(
+            countdown_clear_with_path(&store, || Ok(path.clone())),
+            Err(COUNTDOWN_NEWER_SCHEMA.to_string())
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), newer);
+
+        // The largest valid record is far below the cap.
+        let mut largest = sample_countdown();
+        largest.target_date = "9999-12-31".to_string();
+        largest.saved_at_ms = MAX_SAFE_JS_INTEGER;
+        largest.finished_seen_at_ms = Some(MAX_SAFE_JS_INTEGER);
+        assert!(serialize_countdown(&largest).unwrap().len() < 256);
+
+        // A directory at the path is unreadable, and clear refuses it.
+        let dir_path = temp.path().join("dir").join("countdown.json");
+        std::fs::create_dir_all(&dir_path).unwrap();
+        assert_eq!(
+            load_countdown_from_path(&dir_path).status,
+            CountdownLoadStatus::Unreadable
+        );
+        assert!(clear_countdown_at_path(&dir_path).is_err());
+        assert!(persist_countdown_to_path(&dir_path, &sample_countdown()).is_err());
+        assert!(dir_path.is_dir());
+    }
+
+    #[test]
+    fn countdown_symlink() {
+        let temp = TestTempDir::new("date-cd-symlink");
+        let outside = temp.path().join("outside.json");
+        let outside_bytes = serde_json::to_vec(&sample_countdown()).unwrap();
+        std::fs::write(&outside, &outside_bytes).unwrap();
+
+        let dir = temp.path().join("app");
+        std::fs::create_dir_all(&dir).unwrap();
+        let link = dir.join("countdown.json");
+        if try_symlink_file(&outside, &link).is_none() {
+            return; // Windows without the symlink privilege.
+        }
+        // Never followed or read, never backed up, never written through.
+        assert_eq!(
+            load_countdown_from_path(&link),
+            CountdownLoad::without_state(CountdownLoadStatus::Unreadable)
+        );
+        assert!(!dir.join("countdown.json.bak").exists());
+        let store = disk_countdown_store();
+        assert!(countdown_save_with_path(&store, sample_countdown(), || Ok(link.clone())).is_err());
+        assert!(store.state.lock().unwrap().is_none());
+        assert_eq!(std::fs::read(&outside).unwrap(), outside_bytes);
+        // Clear removes the link itself; the target is untouched.
+        countdown_clear_with_path(&store, || Ok(link.clone())).unwrap();
+        assert!(std::fs::symlink_metadata(&link).is_err());
+        assert_eq!(std::fs::read(&outside).unwrap(), outside_bytes);
+
+        // A symlinked .bak is never followed or replaced.
+        let bak_link = dir.join("countdown.json.bak");
+        if try_symlink_file(&outside, &bak_link).is_some() {
+            std::fs::write(dir.join("countdown.json"), b"{corrupt").unwrap();
+            assert_eq!(
+                load_countdown_from_path(&dir.join("countdown.json")).status,
+                CountdownLoadStatus::Corrupt
+            );
+            assert!(std::fs::symlink_metadata(&bak_link)
+                .unwrap()
+                .file_type()
+                .is_symlink());
+            assert_eq!(std::fs::read(&outside).unwrap(), outside_bytes);
+        }
+    }
+
+    #[test]
+    fn countdown_bad_time() {
+        let with_time = |t: &str| {
+            let mut s = sample_countdown();
+            s.target_time = t.to_string();
+            s
+        };
+        for ok in ["", "00:00", "09:30", "23:59"] {
+            assert_eq!(validate_countdown_state(&with_time(ok)), Ok(()), "{ok:?}");
+        }
+        for bad in [
+            "24:00",
+            "9:30",
+            "09:30:00",
+            " 09:30",
+            "09:30 ",
+            "09:60",
+            "ab:cd",
+            "0930",
+            "09-30",
+            "\u{0660}9:30",
+        ] {
+            assert!(
+                validate_countdown_state(&with_time(bad)).is_err(),
+                "{bad:?}"
+            );
+        }
+        let with_date = |d: &str| {
+            let mut s = sample_countdown();
+            s.target_date = d.to_string();
+            s
+        };
+        for bad in [
+            "",
+            "2026-02-30",
+            "2026-1-01",
+            "0000-01-01",
+            "10000-01-01",
+            " 2026-12-31",
+        ] {
+            assert!(
+                validate_countdown_state(&with_date(bad)).is_err(),
+                "{bad:?}"
+            );
+        }
+        assert_eq!(validate_countdown_state(&with_date("2028-02-29")), Ok(()));
+
+        let mut s = sample_countdown();
+        s.schema_version = 2;
+        assert!(validate_countdown_state(&s).is_err());
+        s.schema_version = 0;
+        assert!(validate_countdown_state(&s).is_err());
+        let mut s = sample_countdown();
+        s.saved_at_ms = MAX_SAFE_JS_INTEGER + 1;
+        assert!(validate_countdown_state(&s).is_err());
+        let mut s = sample_countdown();
+        s.finished_seen_at_ms = Some(MAX_SAFE_JS_INTEGER + 1);
+        assert!(validate_countdown_state(&s).is_err());
+
+        // A refused save writes nothing and keeps the previous record.
+        let temp = TestTempDir::new("date-cd-badtime");
+        let path = temp.path().join("countdown.json");
+        let store = disk_countdown_store();
+        countdown_save_with_path(&store, sample_countdown(), || Ok(path.clone())).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        for bad in ["24:00", "9:30"] {
+            assert!(countdown_save_with_path(&store, with_time(bad), || Ok(path.clone())).is_err());
+        }
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(
+            store.state.lock().unwrap().as_ref(),
+            Some(&sample_countdown())
+        );
+        // A stored bad time is corrupt.
+        std::fs::write(&path, serde_json::to_vec(&with_time("24:00")).unwrap()).unwrap();
+        assert_eq!(
+            load_countdown_from_path(&path).status,
+            CountdownLoadStatus::Corrupt
+        );
+    }
+
+    #[test]
+    fn countdown_newer_schema_ignored_not_backed_up() {
+        let temp = TestTempDir::new("date-cd-newer");
+        let path = temp.path().join("countdown.json");
+        let bak = temp.path().join("countdown.json.bak");
+        let store = disk_countdown_store();
+        for bytes in [
+            br#"{"schemaVersion":2,"targetDate":"2027-01-01","alarms":[1,2]}"#.to_vec(),
+            br#"{"schemaVersion":7}"#.to_vec(),
+        ] {
+            std::fs::write(&path, &bytes).unwrap();
+            let load = countdown_load_with_path(&store, || Ok(path.clone())).unwrap();
+            assert_eq!(
+                load,
+                CountdownLoad::without_state(CountdownLoadStatus::Newer)
+            );
+            assert_eq!(
+                serde_json::to_value(&load).unwrap(),
+                json!({"state": null, "status": "newer"})
+            );
+            // Never written over, never removed, never backed up.
+            assert_eq!(
+                countdown_save_with_path(&store, sample_countdown(), || Ok(path.clone())),
+                Err(COUNTDOWN_NEWER_SCHEMA.to_string())
+            );
+            assert_eq!(
+                countdown_clear_with_path(&store, || Ok(path.clone())),
+                Err(COUNTDOWN_NEWER_SCHEMA.to_string())
+            );
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            assert!(!bak.exists());
+        }
+        // Older or malformed versions are not "newer".
+        for bytes in [
+            br#"{"schemaVersion":0}"#.to_vec(),
+            br#"{"schemaVersion":-1}"#.to_vec(),
+            br#"{"schemaVersion":"2"}"#.to_vec(),
+            br#"{"schemaVersion":2.5}"#.to_vec(),
+            br#"[{"schemaVersion":2}]"#.to_vec(),
+        ] {
+            std::fs::write(&path, &bytes).unwrap();
+            assert_eq!(
+                load_countdown_from_path(&path).status,
+                CountdownLoadStatus::Corrupt,
+                "{}",
+                String::from_utf8_lossy(&bytes)
+            );
+        }
+    }
+
+    #[test]
+    fn countdown_corrupt_bak_once_then_none() {
+        let temp = TestTempDir::new("date-cd-corrupt");
+        let cases: Vec<(&str, Vec<u8>)> = vec![
+            ("not-json", b"{\"schemaVersion\":1,".to_vec()),
+            ("empty", Vec::new()),
+            ("not-utf8", vec![0xff, 0xfe]),
+            ("not-object", b"[]".to_vec()),
+            ("no-schema", br#"{"targetDate":"2026-12-31"}"#.to_vec()),
+            ("string-schema", br#"{"schemaVersion":"1"}"#.to_vec()),
+            (
+                "bad-date",
+                br#"{"schemaVersion":1,"targetDate":"2026-02-30","targetTime":"","savedAtMs":1,"finishedSeenAtMs":null}"#
+                    .to_vec(),
+            ),
+        ];
+        for (name, bytes) in cases {
+            let dir = temp.path().join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("countdown.json");
+            let bak = dir.join("countdown.json.bak");
+            std::fs::write(&path, &bytes).unwrap();
+            assert_eq!(
+                load_countdown_from_path(&path),
+                CountdownLoad::without_state(CountdownLoadStatus::Corrupt),
+                "{name}"
+            );
+            assert_eq!(std::fs::read(&bak).unwrap(), bytes, "{name}");
+            // Loading the same bytes again: still no state, no new backup.
+            let modified = std::fs::metadata(&bak).unwrap().modified().unwrap();
+            assert_eq!(load_countdown_from_path(&path).state, None, "{name}");
+            assert_eq!(
+                std::fs::metadata(&bak).unwrap().modified().unwrap(),
+                modified,
+                "{name}"
+            );
+            // A save replaces the corrupt record and keeps the backup.
+            let store = disk_countdown_store();
+            countdown_save_with_path(&store, sample_countdown(), || Ok(path.clone())).unwrap();
+            assert_eq!(
+                load_countdown_from_path(&path).status,
+                CountdownLoadStatus::Ok
+            );
+            assert_eq!(std::fs::read(&bak).unwrap(), bytes, "{name}");
+            assert_eq!(
+                file_names(&dir),
+                vec![
+                    "countdown.json".to_string(),
+                    "countdown.json.bak".to_string()
+                ]
+            );
+        }
+    }
+
+    #[test]
+    fn countdown_does_not_touch_settings() {
+        let temp = TestTempDir::new("date-cd-isolated");
+        let dir = temp.path();
+        let settings = dir.join("settings.json");
+        let history = dir.join("history.json");
+        let settings_bytes = br#"{"checkUpdatesOnStartup":false,"injected":1}"#.to_vec();
+        let history_bytes = b"[not json".to_vec();
+        std::fs::write(&settings, &settings_bytes).unwrap();
+        std::fs::write(&history, &history_bytes).unwrap();
+        let path = dir.join("countdown.json");
+        let store = disk_countdown_store();
+
+        countdown_save_with_path(&store, sample_countdown(), || Ok(path.clone())).unwrap();
+        countdown_load_with_path(&store, || Ok(path.clone())).unwrap();
+        std::fs::write(&path, b"{corrupt").unwrap();
+        countdown_load_with_path(&store, || Ok(path.clone())).unwrap();
+        countdown_clear_with_path(&store, || Ok(path.clone())).unwrap();
+
+        assert_eq!(std::fs::read(&settings).unwrap(), settings_bytes);
+        assert_eq!(std::fs::read(&history).unwrap(), history_bytes);
+        assert_eq!(
+            file_names(dir),
+            vec![
+                "countdown.json.bak".to_string(),
+                "history.json".to_string(),
+                "settings.json".to_string()
+            ]
+        );
+        // The countdown is not an AppSettings field.
+        assert!(parse_settings_value(&json!({"countdown": sample_countdown()})).is_err());
+    }
+
+    #[test]
+    fn history_read_error_is_read_only_not_empty() {
+        let temp = TestTempDir::new("date-hist-readerr");
+        let status_json = |reason: Option<HistoryReadOnlyReason>| {
+            serde_json::to_value(HistoryStatus::from_reason(reason)).unwrap()
+        };
+        assert_eq!(
+            status_json(None),
+            json!({"readOnly": false, "reason": null})
+        );
+        assert_eq!(
+            status_json(Some(HistoryReadOnlyReason::ReadError)),
+            json!({"readOnly": true, "reason": "read_error"})
+        );
+        assert_eq!(
+            status_json(Some(HistoryReadOnlyReason::TooLarge)),
+            json!({"readOnly": true, "reason": "too_large"})
+        );
+        assert_eq!(
+            status_json(Some(HistoryReadOnlyReason::NewerSchema)),
+            json!({"readOnly": true, "reason": "newer_schema"})
+        );
+        assert_eq!(
+            status_json(Some(HistoryReadOnlyReason::Corrupt)),
+            json!({"readOnly": true, "reason": "corrupt"})
+        );
+
+        // Missing: empty and writable.
+        let missing = temp.path().join("missing").join("history.json");
+        assert_eq!(load_history_from_path(&missing), HistoryLoad::default());
+
+        // A directory in place of the file: read-only, nothing backed up.
+        let dir_case = temp.path().join("dir-case");
+        let dir_path = dir_case.join("history.json");
+        std::fs::create_dir_all(&dir_path).unwrap();
+        let load = load_history_from_path(&dir_path);
+        assert_eq!(load.read_only, Some(HistoryReadOnlyReason::ReadError));
+        assert!(load.entries.is_empty());
+        assert!(!dir_case.join("history.json.bak").exists());
+
+        // Over the cap: read-only "too_large", nothing backed up, bytes kept.
+        let big_case = temp.path().join("big-case");
+        std::fs::create_dir_all(&big_case).unwrap();
+        let big = big_case.join("history.json");
+        let big_bytes = vec![b' '; HISTORY_MAX_FILE_BYTES + 1];
+        std::fs::write(&big, &big_bytes).unwrap();
+        let state = history_from_load(load_history_from_path(&big));
+        assert_eq!(
+            history_status(&state).unwrap(),
+            HistoryStatus::from_reason(Some(HistoryReadOnlyReason::TooLarge))
+        );
+        assert!(history_add_with_path(&state, distinct_entry(1), || Ok(big.clone())).is_err());
+        assert_eq!(std::fs::read(&big).unwrap(), big_bytes);
+        assert!(!big_case.join("history.json.bak").exists());
+
+        // A symlinked file: read-only, never followed.
+        let link_case = temp.path().join("link-case");
+        std::fs::create_dir_all(&link_case).unwrap();
+        let outside = temp.path().join("outside.json");
+        std::fs::write(&outside, history_bytes(&[stored(&distinct_entry(1))])).unwrap();
+        let link = link_case.join("history.json");
+        if try_symlink_file(&outside, &link).is_some() {
+            let load = load_history_from_path(&link);
+            assert_eq!(load.read_only, Some(HistoryReadOnlyReason::ReadError));
+            assert!(load.entries.is_empty());
+            assert!(!link_case.join("history.json.bak").exists());
+        }
+
+        // A file another process holds open without sharing (Windows).
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt;
+            let lock_case = temp.path().join("lock-case");
+            std::fs::create_dir_all(&lock_case).unwrap();
+            let locked = lock_case.join("history.json");
+            let good = history_bytes(&[stored(&distinct_entry(3))]);
+            std::fs::write(&locked, &good).unwrap();
+            let holder = OpenOptions::new()
+                .read(true)
+                .share_mode(0)
+                .open(&locked)
+                .unwrap();
+            let state = history_from_load(load_history_from_path(&locked));
+            assert_eq!(
+                *state.read_only.lock().unwrap(),
+                Some(HistoryReadOnlyReason::ReadError)
+            );
+            assert!(history_list_state(&state).unwrap().is_empty());
+            drop(holder);
+            assert_eq!(std::fs::read(&locked).unwrap(), good);
+            assert!(!lock_case.join("history.json.bak").exists());
+            // Retry after the lock is released loads the real history.
+            let status = history_retry_with_path(&state, || Ok(locked.clone())).unwrap();
+            assert!(!status.read_only);
+            assert_eq!(history_list_state(&state).unwrap().len(), 1);
+        }
+
+        // A newer-schema object: read-only, never backed up.
+        let newer_case = temp.path().join("newer-case");
+        std::fs::create_dir_all(&newer_case).unwrap();
+        let newer = newer_case.join("history.json");
+        std::fs::write(&newer, br#"{"schemaVersion":2,"entries":[]}"#).unwrap();
+        assert_eq!(
+            load_history_from_path(&newer).read_only,
+            Some(HistoryReadOnlyReason::NewerSchema)
+        );
+        assert!(!newer_case.join("history.json.bak").exists());
+
+        // Retry: the directory is replaced by a valid file → writable again,
+        // and ids never go backwards.
+        let state = history_from_load(load_history_from_path(&dir_path));
+        *state.next_id.lock().unwrap() = 50;
+        std::fs::remove_dir(&dir_path).unwrap();
+        let mut seeded = stored(&distinct_entry(7));
+        seeded.id = 9;
+        std::fs::write(&dir_path, history_bytes(&[seeded.clone()])).unwrap();
+        let status = history_retry_with_path(&state, || Ok(dir_path.clone())).unwrap();
+        assert_eq!(status, HistoryStatus::from_reason(None));
+        assert_eq!(history_list_state(&state).unwrap(), vec![seeded]);
+        assert_eq!(*state.next_id.lock().unwrap(), 50);
+        let list =
+            history_add_with_path(&state, distinct_entry(8), || Ok(dir_path.clone())).unwrap();
+        assert_eq!(list[0].id, 50);
+        assert_eq!(list.len(), 2);
+    }
+
+    #[test]
+    fn history_corrupt_writes_bak_then_read_only() {
+        let temp = TestTempDir::new("date-hist-corrupt");
+        let cases: Vec<(&str, Vec<u8>)> = vec![
+            ("not-json", b"[{\"id\":1,".to_vec()),
+            ("empty", Vec::new()),
+            ("object", br#"{"entries":[]}"#.to_vec()),
+            ("unknown-field", br#"[{"id":1,"bogus":true}]"#.to_vec()),
+            ("not-array-of-entries", b"[1,2,3]".to_vec()),
+        ];
+        for (name, bytes) in cases {
+            let dir = temp.path().join(name);
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join("history.json");
+            let bak = dir.join("history.json.bak");
+            std::fs::write(&path, &bytes).unwrap();
+            let load = load_history_from_path(&path);
+            assert_eq!(
+                load.read_only,
+                Some(HistoryReadOnlyReason::Corrupt),
+                "{name}"
+            );
+            assert!(load.entries.is_empty(), "{name}");
+            assert_eq!(std::fs::read(&bak).unwrap(), bytes, "{name}");
+            // The original stays in place, byte for byte.
+            assert_eq!(std::fs::read(&path).unwrap(), bytes, "{name}");
+            // Loading again writes no new backup.
+            let modified = std::fs::metadata(&bak).unwrap().modified().unwrap();
+            assert_eq!(
+                load_history_from_path(&path).read_only,
+                Some(HistoryReadOnlyReason::Corrupt)
+            );
+            assert_eq!(
+                std::fs::metadata(&bak).unwrap().modified().unwrap(),
+                modified
+            );
+        }
+        // A valid history (and an empty list) loads writable, with no backup.
+        let dir = temp.path().join("valid");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("history.json");
+        std::fs::write(&path, b"[]").unwrap();
+        assert_eq!(load_history_from_path(&path), HistoryLoad::default());
+        let entries = vec![stored(&distinct_entry(1))];
+        std::fs::write(&path, history_bytes(&entries)).unwrap();
+        let load = load_history_from_path(&path);
+        assert_eq!(load.read_only, None);
+        assert_eq!(load.entries, entries);
+        assert_eq!(load.next_id(), 2);
+        assert!(!dir.join("history.json.bak").exists());
+    }
+
+    #[test]
+    fn history_dropped_entry_writes_bak() {
+        let temp = TestTempDir::new("date-hist-dropped");
+        let path = temp.path().join("history.json");
+        let bak = temp.path().join("history.json.bak");
+        let good = stored(&distinct_entry(1));
+        let mut bad = stored(&distinct_entry(2));
+        bad.id = 2;
+        bad.calculator = "tax".to_string();
+        let bytes = history_bytes(&[bad, good.clone()]);
+        std::fs::write(&path, &bytes).unwrap();
+
+        // The valid entries are still shown, but history is read-only and
+        // the full file (with the dropped entry) is preserved.
+        let load = load_history_from_path(&path);
+        assert_eq!(load.entries, vec![good.clone()]);
+        assert_eq!(load.read_only, Some(HistoryReadOnlyReason::Corrupt));
+        assert_eq!(std::fs::read(&bak).unwrap(), bytes);
+        let state = history_from_load(load);
+        assert_eq!(
+            history_add_with_path(&state, distinct_entry(3), || Ok(path.clone())),
+            Err(HISTORY_READ_ONLY.to_string())
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+
+        // Past the 500-entry cap counts as dropped too.
+        let over: Vec<HistoryEntry> = (0..=HISTORY_MAX_ENTRIES)
+            .map(|n| {
+                let mut e = stored(&distinct_entry(n));
+                e.id = n as u64 + 1;
+                e
+            })
+            .collect();
+        let over_dir = temp.path().join("over");
+        std::fs::create_dir_all(&over_dir).unwrap();
+        let over_path = over_dir.join("history.json");
+        std::fs::write(&over_path, history_bytes(&over)).unwrap();
+        let load = load_history_from_path(&over_path);
+        assert_eq!(load.entries.len(), HISTORY_MAX_ENTRIES);
+        assert_eq!(load.read_only, Some(HistoryReadOnlyReason::Corrupt));
+        assert!(over_dir.join("history.json.bak").exists());
+    }
+
+    #[test]
+    fn history_add_refused_when_read_only() {
+        let temp = TestTempDir::new("date-hist-refuse");
+        let path = temp.path().join("history.json");
+        let original = history_bytes(&[stored(&distinct_entry(1))]);
+        std::fs::write(&path, &original).unwrap();
+        for reason in [
+            HistoryReadOnlyReason::ReadError,
+            HistoryReadOnlyReason::Corrupt,
+            HistoryReadOnlyReason::TooLarge,
+            HistoryReadOnlyReason::NewerSchema,
+        ] {
+            let state = disk_history(Some(reason));
+            *state.entries.lock().unwrap() = vec![stored(&distinct_entry(1))];
+            let never = || -> Result<PathBuf, String> { unreachable!("read-only wrote") };
+            assert_eq!(
+                history_add_with_path(&state, distinct_entry(2), never),
+                Err(HISTORY_READ_ONLY.to_string())
+            );
+            assert_eq!(
+                history_delete_with_path(&state, 1, never),
+                Err(HISTORY_READ_ONLY.to_string())
+            );
+            assert_eq!(
+                history_clear_with_path(&state, never),
+                Err(HISTORY_READ_ONLY.to_string())
+            );
+            assert_eq!(history_list_state(&state).unwrap().len(), 1);
+            assert_eq!(*state.next_id.lock().unwrap(), 1);
+            assert_eq!(std::fs::read(&path).unwrap(), original);
+        }
+        // Writable state still writes.
+        let state = disk_history(None);
+        assert!(history_add_with_path(&state, distinct_entry(2), || Ok(path.clone())).is_ok());
+        // Smoke (in-memory) history is never read-only: retry is a no-op.
+        let memory = HistoryState {
+            in_memory_only: true,
+            entries: Mutex::new(Vec::new()),
+            next_id: Mutex::new(1),
+            read_only: Mutex::new(None),
+        };
+        let never = || -> Result<PathBuf, String> { unreachable!("smoke retry touched disk") };
+        assert_eq!(
+            history_retry_with_path(&memory, never).unwrap(),
+            HistoryStatus::from_reason(None)
+        );
+    }
+
+    #[test]
+    fn history_reset_renames_once() {
+        let temp = TestTempDir::new("date-hist-reset");
+        let path = temp.path().join("history.json");
+        let bak = temp.path().join("history.json.bak");
+
+        // Writable history refuses a reset: it is only the banner's action.
+        let writable = disk_history(None);
+        assert_eq!(
+            history_reset_with_path(&writable, || Ok(path.clone())),
+            Err("history_not_read_only".to_string())
+        );
+        assert!(!path.exists());
+
+        // An over-cap file (no backup at load) is renamed to .bak.
+        let first = vec![b' '; HISTORY_MAX_FILE_BYTES + 1];
+        std::fs::write(&path, &first).unwrap();
+        let state = history_from_load(load_history_from_path(&path));
+        assert!(!bak.exists());
+        history_reset_with_path(&state, || Ok(path.clone())).unwrap();
+        assert_eq!(std::fs::read(&bak).unwrap(), first);
+        assert_eq!(std::fs::read(&path).unwrap(), history_bytes(&[]));
+        assert_eq!(
+            history_status(&state).unwrap(),
+            HistoryStatus::from_reason(None)
+        );
+        assert!(history_list_state(&state).unwrap().is_empty());
+        let list = history_add_with_path(&state, distinct_entry(1), || Ok(path.clone())).unwrap();
+        assert_eq!(load_history_from_path(&path).entries, list);
+
+        // A second problem: the existing .bak is never replaced, and the
+        // current bytes (not in any backup) are kept under a fresh name.
+        let second = vec![b'x'; HISTORY_MAX_FILE_BYTES + 2];
+        std::fs::write(&path, &second).unwrap();
+        let state = history_from_load(load_history_from_path(&path));
+        history_reset_with_path(&state, || Ok(path.clone())).unwrap();
+        assert_eq!(std::fs::read(&bak).unwrap(), first);
+        assert_eq!(load_history_from_path(&path), HistoryLoad::default());
+        let extra_baks = |dir: &Path| -> Vec<Vec<u8>> {
+            file_names(dir)
+                .into_iter()
+                .filter(|n| n.starts_with("history.json.bak-"))
+                .map(|n| std::fs::read(dir.join(n)).unwrap())
+                .collect()
+        };
+        assert_eq!(extra_baks(temp.path()), vec![second.clone()]);
+
+        // A newer-schema file with an existing, different .bak: its bytes
+        // are kept too, never overwritten by the empty history.
+        let newer = br#"{"schemaVersion":2,"entries":[]}"#.to_vec();
+        std::fs::write(&path, &newer).unwrap();
+        let state = history_from_load(load_history_from_path(&path));
+        assert_eq!(
+            history_status(&state).unwrap(),
+            HistoryStatus::from_reason(Some(HistoryReadOnlyReason::NewerSchema))
+        );
+        history_reset_with_path(&state, || Ok(path.clone())).unwrap();
+        assert_eq!(std::fs::read(&bak).unwrap(), first);
+        let kept = extra_baks(temp.path());
+        assert_eq!(kept.len(), 2);
+        assert!(kept.contains(&second) && kept.contains(&newer));
+        assert_eq!(load_history_from_path(&path), HistoryLoad::default());
+
+        // A corrupt file was already copied at load; reset keeps that copy.
+        let dir = temp.path().join("corrupt");
+        std::fs::create_dir_all(&dir).unwrap();
+        let cpath = dir.join("history.json");
+        std::fs::write(&cpath, b"[oops").unwrap();
+        let state = history_from_load(load_history_from_path(&cpath));
+        history_reset_with_path(&state, || Ok(cpath.clone())).unwrap();
+        assert_eq!(
+            std::fs::read(dir.join("history.json.bak")).unwrap(),
+            b"[oops"
+        );
+        assert_eq!(load_history_from_path(&cpath), HistoryLoad::default());
+
+        // A failed reset stays read-only.
+        let blocker = temp.path().join("blocker");
+        std::fs::write(&blocker, b"file").unwrap();
+        let state = disk_history(Some(HistoryReadOnlyReason::ReadError));
+        assert!(history_reset_with_path(&state, || Ok(blocker.join("history.json"))).is_err());
+        assert_eq!(
+            *state.read_only.lock().unwrap(),
+            Some(HistoryReadOnlyReason::ReadError)
+        );
+
+        let leftover_tmp = file_names(temp.path())
+            .iter()
+            .filter(|n| n.ends_with(".tmp"))
+            .count();
+        assert_eq!(leftover_tmp, 0);
+    }
+
+    #[test]
+    fn engine_version_pinned() {
+        // The engine is decoupled from the app (plan A4).
+        assert_eq!(date_core::ENGINE_VERSION, EXPECTED_ENGINE_VERSION);
+        let conf: Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        assert_eq!(conf["version"], json!(env!("CARGO_PKG_VERSION")));
+        assert_eq!(env!("CARGO_PKG_VERSION"), "1.1.0");
     }
 }

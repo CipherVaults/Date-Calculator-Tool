@@ -211,16 +211,24 @@
         <div class="live-result" id="bizLiveResult">→ —</div>
 
         <div class="mini-cal" id="bizCal">
+          <fieldset class="cal-pick" id="bizCalPick">
+            <legend class="cal-pick-legend">Calendar click sets</legend>
+            <label class="cal-pick-opt" for="bizPickStart"><input type="radio" name="bizPick" id="bizPickStart" value="start" checked><span>start</span></label>
+            <label class="cal-pick-opt" for="bizPickEnd"><input type="radio" name="bizPick" id="bizPickEnd" value="end"><span>end</span></label>
+          </fieldset>
+          <div class="cal-pick-hint" id="bizCalHint" role="status" aria-live="polite">Next click sets the start date.</div>
           <div class="mini-cal-head">
             <button class="mini-cal-nav" id="bizCalPrevBtn" type="button" aria-label="Previous month" aria-controls="bizCalGrid">‹</button>
             <div class="mini-cal-title" id="bizCalTitle" aria-live="polite">—</div>
             <button class="mini-cal-nav" id="bizCalNextBtn" type="button" aria-label="Next month" aria-controls="bizCalGrid">›</button>
+            <button class="mini-cal-nav mini-cal-today" id="bizCalTodayBtn" type="button" aria-label="today, show the current month" aria-controls="bizCalGrid">today</button>
           </div>
           <div class="mini-cal-weekdays" id="bizCalWeekdays" aria-hidden="true">
             <span class="mini-cal-dow">Mon</span><span class="mini-cal-dow">Tue</span><span class="mini-cal-dow">Wed</span><span class="mini-cal-dow">Thu</span><span class="mini-cal-dow">Fri</span><span class="mini-cal-dow weekend">Sat</span><span class="mini-cal-dow weekend">Sun</span>
           </div>
           <div class="mini-cal-grid" id="bizCalGrid" role="group" aria-labelledby="bizCalTitle"></div>
           <div class="mini-cal-legend" aria-hidden="true">
+            <span class="legend-item"><span class="legend-swatch swatch-endpoint"></span>start / end</span>
             <span class="legend-item"><span class="legend-swatch swatch-range"></span>in range</span>
             <span class="legend-item"><span class="legend-swatch swatch-weekend"></span>weekend</span>
             <span class="legend-item"><span class="legend-swatch swatch-holiday"></span>holiday</span>
@@ -320,6 +328,7 @@
             <button class="mini-cal-nav" id="infoCalPrevBtn" type="button" aria-label="Previous month" aria-controls="infoCalGrid">‹</button>
             <div class="mini-cal-title" id="infoCalTitle" aria-live="polite">—</div>
             <button class="mini-cal-nav" id="infoCalNextBtn" type="button" aria-label="Next month" aria-controls="infoCalGrid">›</button>
+            <button class="mini-cal-nav mini-cal-today" id="infoCalTodayBtn" type="button" aria-label="today, show the current month" aria-controls="infoCalGrid">today</button>
           </div>
           <div class="mini-cal-weekdays" id="infoCalWeekdays" aria-hidden="true">
             <span class="mini-cal-dow">Mon</span><span class="mini-cal-dow">Tue</span><span class="mini-cal-dow">Wed</span><span class="mini-cal-dow">Thu</span><span class="mini-cal-dow">Fri</span><span class="mini-cal-dow weekend">Sat</span><span class="mini-cal-dow weekend">Sun</span>
@@ -360,6 +369,10 @@
           <label for="cdTime">Target time (optional, local)</label>
           <input class="date-input date-empty" type="time" id="cdTime" step="60" placeholder="HH:MM">
         </div>
+        <div class="cd-saved-note hidden" id="cdSavedNote">
+          <span class="cd-saved-note-text" id="cdSavedNoteText">Saved on this device. It resumes when you reopen the app.</span>
+          <button class="link-btn" id="cdForgetBtn" type="button" aria-label="Forget the saved countdown">Forget</button>
+        </div>
 
         <div class="button-group">
           <button class="calc-btn" id="calcCdBtn" type="button">calculate</button>
@@ -372,6 +385,7 @@
 
       <div class="right-panel">
         <div class="formula-title">live formula</div>
+        <div class="cd-phase-row"><span class="cd-phase hidden" id="cdPhase" aria-hidden="true"></span></div>
         <div class="countdown-big" id="cdClock" role="timer" aria-labelledby="cdTitle">—</div>
         <div class="countdown-status" id="cdStatus" role="status" aria-live="polite">Pick a target date to start the countdown.</div>
         <ul class="trace live-formula" id="cdTrace" aria-label="Countdown: calculation steps">
@@ -384,6 +398,7 @@
             <button class="mini-cal-nav" id="cdCalPrevBtn" type="button" aria-label="Previous month" aria-controls="cdCalGrid">‹</button>
             <div class="mini-cal-title" id="cdCalTitle" aria-live="polite">—</div>
             <button class="mini-cal-nav" id="cdCalNextBtn" type="button" aria-label="Next month" aria-controls="cdCalGrid">›</button>
+            <button class="mini-cal-nav mini-cal-today" id="cdCalTodayBtn" type="button" aria-label="today, show the current month" aria-controls="cdCalGrid">today</button>
           </div>
           <div class="mini-cal-weekdays" id="cdCalWeekdays" aria-hidden="true">
             <span class="mini-cal-dow">Mon</span><span class="mini-cal-dow">Tue</span><span class="mini-cal-dow">Wed</span><span class="mini-cal-dow">Thu</span><span class="mini-cal-dow">Fri</span><span class="mini-cal-dow weekend">Sat</span><span class="mini-cal-dow weekend">Sun</span>
@@ -425,12 +440,27 @@
         </div>
       </div>
     </div>
+    <div class="history-readonly hidden" id="historyReadOnlyBanner">
+      <div class="history-readonly-text" role="status" aria-live="polite" aria-atomic="true">
+        <span class="history-readonly-title" id="historyReadOnlyText">History could not be read safely. Nothing will be overwritten.</span>
+        <span class="history-readonly-detail" id="historyReadOnlyDetail"></span>
+      </div>
+      <div class="history-readonly-actions">
+        <button class="calc-btn" id="historyRetryBtn" type="button">retry</button>
+        <button class="reset-btn" id="historyResetBtn" type="button">start a new history</button>
+        <div class="confirm-group hidden" id="historyResetConfirm">
+          <span class="confirm-label">start a new, empty history? The current history is kept as a backup copy.</span>
+          <button class="calc-btn confirm-yes-btn" id="confirmHistoryResetBtn" type="button">yes, start new</button>
+          <button class="reset-btn" id="cancelHistoryResetBtn" type="button">cancel</button>
+        </div>
+      </div>
+    </div>
     <div class="history-list" id="historyList">
       <div class="history-empty">No calculations recorded yet. Press calculate, Enter, or copy on any card to save to history.</div>
     </div>
   </div>
 
-  <footer>Mohamed Sayed · Ahmed Emara · built with Claude (Anthropic) · 2026 · <span id="appVersion">Desktop v1.0.0</span></footer>
+  <footer>Mohamed Sayed · Ahmed Emara · built with Claude (Anthropic) · 2026 · <span id="appVersion">Desktop v1.1.0</span></footer>
 </div>
 
 <div class="modal-backdrop hidden" id="aboutModal" role="dialog" aria-modal="true" aria-labelledby="aboutModalTitle">
@@ -444,7 +474,7 @@
       <div class="about-icon-badge" aria-hidden="true">31</div>
       <div>
         <div class="about-app-name" id="aboutAppName">Date Calculator Tool</div>
-        <div class="about-version-pill" id="aboutVersionPill">Desktop v1.0.0 · Tauri v2 + Rust</div>
+        <div class="about-version-pill" id="aboutVersionPill">Desktop v1.1.0 · Tauri v2 + Rust</div>
       </div>
     </div>
 

@@ -418,6 +418,57 @@ body {
   font-size: 0.7rem;
 }
 
+/* History read-only banner (A3) */
+.history-readonly {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.6rem 0.9rem;
+  background: #161822;
+  border: 1px solid #3a3f4c;
+  border-left: 3px solid #E9A715;
+  padding: 0.7rem 0.9rem;
+  margin-bottom: 0.8rem;
+}
+
+.history-readonly-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+
+.history-readonly-title {
+  font-size: 0.78rem;
+  color: #eef2ff;
+}
+
+.history-readonly-detail {
+  font-size: 0.7rem;
+  color: #a3adc2;
+}
+
+.history-readonly-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.reset-btn:disabled,
+.copy-btn:disabled,
+.calc-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.reset-btn:disabled:hover {
+  border-color: #3a3f4c;
+  color: #cbd5e6;
+}
+
 .history-list {
   background: #0E0F12;
   border: 1px solid #2a2d35;
@@ -1030,6 +1081,65 @@ input[type="time"]::-webkit-date-and-time-value {
   margin-bottom: 0.5rem;
 }
 
+.mini-cal-nav.mini-cal-today {
+  font-size: 0.66rem;
+  text-transform: lowercase;
+}
+
+/* Business Days: which field a calendar click fills */
+.cal-pick {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.6rem;
+  border: none;
+  margin: 0 0 0.3rem 0;
+  padding: 0;
+  min-width: 0;
+}
+
+.cal-pick-legend {
+  float: left;
+  font-size: 0.66rem;
+  color: #8f9aaf;
+  text-transform: uppercase;
+  padding: 0;
+  margin-right: 0.2rem;
+}
+
+.cal-pick-opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.72rem;
+  color: #a3adc2;
+  cursor: pointer;
+  padding: 0.15rem 0.5rem;
+  border: 1px solid #2a2d35;
+  background: #161822;
+}
+
+.cal-pick-opt input {
+  accent-color: #E9A715;
+  margin: 0;
+}
+
+.cal-pick-opt:has(input:checked) {
+  border-color: #E9A715;
+  color: #eef2ff;
+}
+
+.cal-pick-opt:has(input:focus-visible) {
+  outline: 1px solid #94C59A;
+  outline-offset: 2px;
+}
+
+.cal-pick-hint {
+  font-size: 0.66rem;
+  color: #8f9aaf;
+  margin-bottom: 0.55rem;
+}
+
 .mini-cal-title {
   font-size: 0.74rem;
   color: #eef2ff;
@@ -1094,22 +1204,39 @@ input[type="time"]::-webkit-date-and-time-value {
   display: flex;
   align-items: center;
   justify-content: center;
+  width: 100%;
+  min-width: 0;
   min-height: 1.9rem;
+  margin: 0;
   background: #161822;
   border: 1px solid transparent;
+  border-radius: 0;
   color: #cbd5e6;
   font-family: 'SF Mono', monospace;
   font-size: 0.72rem;
+  line-height: 1;
   font-variant-numeric: tabular-nums;
   padding: 0;
+  -webkit-appearance: none;
+  appearance: none;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
 }
 
 button.mini-cal-cell {
   cursor: pointer;
 }
 
-button.mini-cal-cell:hover {
-  border-color: #3a3f4c;
+@media (hover: hover) {
+  button.mini-cal-cell:not(:disabled):not(.endpoint):hover {
+    border-color: #3a3f4c;
+  }
+}
+
+/* Beats the generic button:focus-visible ring; drawn inside the cell. */
+.mini-cal-cell:focus-visible {
+  outline: 2px solid #eef2ff;
+  outline-offset: -2px;
 }
 
 .mini-cal-cell.weekend {
@@ -1117,13 +1244,17 @@ button.mini-cal-cell:hover {
   color: #8f9aaf;
 }
 
+/* Out-of-month days stay readable (>= 4.5:1 on #0E0F12) and clickable. */
 .mini-cal-cell.out {
   background: transparent;
-  color: #454c5e;
+  color: #8f9aaf;
 }
 
-.mini-cal-cell.out-of-range {
+/* Only dates outside 0001-01-01..9999-12-31 keep the very dim look. */
+.mini-cal-cell.out-of-range,
+.mini-cal-cell:disabled {
   opacity: 0.25;
+  cursor: default;
 }
 
 .mini-cal-cell.holiday {
@@ -1149,15 +1280,53 @@ button.mini-cal-cell:hover {
   background: rgba(148, 197, 154, 0.08);
 }
 
-.mini-cal-cell.endpoint {
+.mini-cal-cell.endpoint,
+.mini-cal-cell.selected,
+.mini-cal-cell.pick-start,
+.mini-cal-cell.pick-end {
   border-color: #E9A715;
   color: #eef2ff;
   font-weight: 600;
 }
 
+.mini-cal-cell.selected {
+  background: rgba(233, 167, 21, 0.18);
+}
+
+/* Start and end differ by a gold bar on their outer edge. */
+.mini-cal-cell.pick-start::before,
+.mini-cal-cell.pick-end::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: #E9A715;
+}
+
+.mini-cal-cell.pick-start::before {
+  left: 0;
+}
+
+.mini-cal-cell.pick-end::before {
+  right: 0;
+}
+
+.mini-cal-cell.pick-start.pick-end::before {
+  left: 0;
+  right: 0;
+  width: auto;
+  height: 3px;
+  bottom: auto;
+}
+
+/* Inset rings combine, so today and holiday both survive on one cell. */
 .mini-cal-cell.today {
-  outline: 1px solid #94C59A;
-  outline-offset: -3px;
+  box-shadow: inset 0 0 0 1px #eef2ff;
+}
+
+.mini-cal-cell.today.holiday {
+  box-shadow: inset 0 0 0 1px #eef2ff, inset 0 -2px 0 #E9A715;
 }
 
 .mini-cal-legend {
@@ -1201,7 +1370,7 @@ button.mini-cal-cell:hover {
 }
 
 .legend-swatch.swatch-today {
-  border-color: #94C59A;
+  border-color: #eef2ff;
 }
 
 .legend-mark {
@@ -1297,6 +1466,47 @@ button.mini-cal-cell:hover {
   margin-bottom: 0.8rem;
   padding-bottom: 0.6rem;
   border-bottom: 1px solid #2a2d35;
+}
+
+.cd-phase-row {
+  min-height: 1.3rem;
+  margin-bottom: 0.3rem;
+}
+
+.cd-phase {
+  display: inline-block;
+  border: 1px solid #94C59A;
+  color: #94C59A;
+  font-size: 0.62rem;
+  line-height: 1.5;
+  text-transform: uppercase;
+  padding: 0 0.45rem;
+  white-space: nowrap;
+}
+
+.cd-phase.is-finished {
+  background: #E9A715;
+  border-color: #E9A715;
+  color: #0E0F12;
+  font-weight: 600;
+}
+
+.cd-saved-note {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.6rem;
+  font-size: 0.68rem;
+  color: #8f9aaf;
+  margin: -0.1rem 0 0.6rem 0;
+  padding-left: 0.6rem;
+  border-left: 2px solid #2a2d35;
+}
+
+.cd-saved-note-text {
+  flex: 1 1 12rem;
+  min-width: 0;
 }
 
 /* Settings: shared field styles */
@@ -1799,6 +2009,20 @@ button.mini-cal-cell:hover {
     min-height: 44px;
   }
 
+  .mini-cal-cell {
+    font-size: 0.85rem;
+  }
+
+  .cal-pick-opt {
+    min-height: 44px;
+    padding: 0 0.85rem;
+  }
+
+  .cal-pick-opt input {
+    width: 20px;
+    height: 20px;
+  }
+
   .check-row,
   .settings-toggle-row,
   .holiday-check {
@@ -1832,6 +2056,22 @@ button.mini-cal-cell:hover {
   input[type="time"].date-empty::before {
     content: attr(placeholder);
     color: #454c5e;
+  }
+}
+
+/* Windows high contrast: box-shadow rings are dropped, so mark with outlines. */
+@media (forced-colors: active) {
+  .mini-cal-cell.today {
+    outline: 1px dashed CanvasText;
+    outline-offset: -4px;
+  }
+
+  .mini-cal-cell.endpoint {
+    border: 2px solid Highlight;
+  }
+
+  .mini-cal-cell:focus-visible {
+    outline: 2px solid Highlight;
   }
 }
 

@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'sha256-7Bdd96Wx6t/TQzQ5vccjNvK+c2Z9Y0vYcu1FZo0zk1Q='; script-src 'sha256-67h4S4Br0CRNGgpTRT4oUfdymUrOMYFqFYLHj+P9CtU='; worker-src 'self'; child-src 'self'; img-src 'self' data:; manifest-src 'self'; connect-src 'self' https://api.github.com; object-src 'none'; base-uri 'none'; form-action 'none';">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'sha256-4QF67PMwTm0C60lqx4nxCC+SjmRjojqz6xk1qX17bvc='; script-src 'sha256-kD+yoidvATqHILLs4cuoVyMQ3KSPPRpY+LsiIyE8Xck='; worker-src 'self'; child-src 'self'; img-src 'self' data:; manifest-src 'self'; connect-src 'self' https://api.github.com; object-src 'none'; base-uri 'none'; form-action 'none';">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <meta name="theme-color" content="#0E0F12">
   <meta name="color-scheme" content="dark">
@@ -436,6 +436,57 @@ body {
 .confirm-yes-btn {
   padding: 0.38rem 0.85rem;
   font-size: 0.7rem;
+}
+
+/* History read-only banner (A3) */
+.history-readonly {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.6rem 0.9rem;
+  background: #161822;
+  border: 1px solid #3a3f4c;
+  border-left: 3px solid #E9A715;
+  padding: 0.7rem 0.9rem;
+  margin-bottom: 0.8rem;
+}
+
+.history-readonly-text {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+
+.history-readonly-title {
+  font-size: 0.78rem;
+  color: #eef2ff;
+}
+
+.history-readonly-detail {
+  font-size: 0.7rem;
+  color: #a3adc2;
+}
+
+.history-readonly-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.reset-btn:disabled,
+.copy-btn:disabled,
+.calc-btn:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.reset-btn:disabled:hover {
+  border-color: #3a3f4c;
+  color: #cbd5e6;
 }
 
 .history-list {
@@ -1050,6 +1101,65 @@ input[type="time"]::-webkit-date-and-time-value {
   margin-bottom: 0.5rem;
 }
 
+.mini-cal-nav.mini-cal-today {
+  font-size: 0.66rem;
+  text-transform: lowercase;
+}
+
+/* Business Days: which field a calendar click fills */
+.cal-pick {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.6rem;
+  border: none;
+  margin: 0 0 0.3rem 0;
+  padding: 0;
+  min-width: 0;
+}
+
+.cal-pick-legend {
+  float: left;
+  font-size: 0.66rem;
+  color: #8f9aaf;
+  text-transform: uppercase;
+  padding: 0;
+  margin-right: 0.2rem;
+}
+
+.cal-pick-opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.72rem;
+  color: #a3adc2;
+  cursor: pointer;
+  padding: 0.15rem 0.5rem;
+  border: 1px solid #2a2d35;
+  background: #161822;
+}
+
+.cal-pick-opt input {
+  accent-color: #E9A715;
+  margin: 0;
+}
+
+.cal-pick-opt:has(input:checked) {
+  border-color: #E9A715;
+  color: #eef2ff;
+}
+
+.cal-pick-opt:has(input:focus-visible) {
+  outline: 1px solid #94C59A;
+  outline-offset: 2px;
+}
+
+.cal-pick-hint {
+  font-size: 0.66rem;
+  color: #8f9aaf;
+  margin-bottom: 0.55rem;
+}
+
 .mini-cal-title {
   font-size: 0.74rem;
   color: #eef2ff;
@@ -1114,22 +1224,39 @@ input[type="time"]::-webkit-date-and-time-value {
   display: flex;
   align-items: center;
   justify-content: center;
+  width: 100%;
+  min-width: 0;
   min-height: 1.9rem;
+  margin: 0;
   background: #161822;
   border: 1px solid transparent;
+  border-radius: 0;
   color: #cbd5e6;
   font-family: 'SF Mono', monospace;
   font-size: 0.72rem;
+  line-height: 1;
   font-variant-numeric: tabular-nums;
   padding: 0;
+  -webkit-appearance: none;
+  appearance: none;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
 }
 
 button.mini-cal-cell {
   cursor: pointer;
 }
 
-button.mini-cal-cell:hover {
-  border-color: #3a3f4c;
+@media (hover: hover) {
+  button.mini-cal-cell:not(:disabled):not(.endpoint):hover {
+    border-color: #3a3f4c;
+  }
+}
+
+/* Beats the generic button:focus-visible ring; drawn inside the cell. */
+.mini-cal-cell:focus-visible {
+  outline: 2px solid #eef2ff;
+  outline-offset: -2px;
 }
 
 .mini-cal-cell.weekend {
@@ -1137,13 +1264,17 @@ button.mini-cal-cell:hover {
   color: #8f9aaf;
 }
 
+/* Out-of-month days stay readable (>= 4.5:1 on #0E0F12) and clickable. */
 .mini-cal-cell.out {
   background: transparent;
-  color: #454c5e;
+  color: #8f9aaf;
 }
 
-.mini-cal-cell.out-of-range {
+/* Only dates outside 0001-01-01..9999-12-31 keep the very dim look. */
+.mini-cal-cell.out-of-range,
+.mini-cal-cell:disabled {
   opacity: 0.25;
+  cursor: default;
 }
 
 .mini-cal-cell.holiday {
@@ -1169,15 +1300,53 @@ button.mini-cal-cell:hover {
   background: rgba(148, 197, 154, 0.08);
 }
 
-.mini-cal-cell.endpoint {
+.mini-cal-cell.endpoint,
+.mini-cal-cell.selected,
+.mini-cal-cell.pick-start,
+.mini-cal-cell.pick-end {
   border-color: #E9A715;
   color: #eef2ff;
   font-weight: 600;
 }
 
+.mini-cal-cell.selected {
+  background: rgba(233, 167, 21, 0.18);
+}
+
+/* Start and end differ by a gold bar on their outer edge. */
+.mini-cal-cell.pick-start::before,
+.mini-cal-cell.pick-end::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: #E9A715;
+}
+
+.mini-cal-cell.pick-start::before {
+  left: 0;
+}
+
+.mini-cal-cell.pick-end::before {
+  right: 0;
+}
+
+.mini-cal-cell.pick-start.pick-end::before {
+  left: 0;
+  right: 0;
+  width: auto;
+  height: 3px;
+  bottom: auto;
+}
+
+/* Inset rings combine, so today and holiday both survive on one cell. */
 .mini-cal-cell.today {
-  outline: 1px solid #94C59A;
-  outline-offset: -3px;
+  box-shadow: inset 0 0 0 1px #eef2ff;
+}
+
+.mini-cal-cell.today.holiday {
+  box-shadow: inset 0 0 0 1px #eef2ff, inset 0 -2px 0 #E9A715;
 }
 
 .mini-cal-legend {
@@ -1221,7 +1390,7 @@ button.mini-cal-cell:hover {
 }
 
 .legend-swatch.swatch-today {
-  border-color: #94C59A;
+  border-color: #eef2ff;
 }
 
 .legend-mark {
@@ -1317,6 +1486,47 @@ button.mini-cal-cell:hover {
   margin-bottom: 0.8rem;
   padding-bottom: 0.6rem;
   border-bottom: 1px solid #2a2d35;
+}
+
+.cd-phase-row {
+  min-height: 1.3rem;
+  margin-bottom: 0.3rem;
+}
+
+.cd-phase {
+  display: inline-block;
+  border: 1px solid #94C59A;
+  color: #94C59A;
+  font-size: 0.62rem;
+  line-height: 1.5;
+  text-transform: uppercase;
+  padding: 0 0.45rem;
+  white-space: nowrap;
+}
+
+.cd-phase.is-finished {
+  background: #E9A715;
+  border-color: #E9A715;
+  color: #0E0F12;
+  font-weight: 600;
+}
+
+.cd-saved-note {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.4rem 0.6rem;
+  font-size: 0.68rem;
+  color: #8f9aaf;
+  margin: -0.1rem 0 0.6rem 0;
+  padding-left: 0.6rem;
+  border-left: 2px solid #2a2d35;
+}
+
+.cd-saved-note-text {
+  flex: 1 1 12rem;
+  min-width: 0;
 }
 
 /* Settings: shared field styles */
@@ -1819,6 +2029,20 @@ button.mini-cal-cell:hover {
     min-height: 44px;
   }
 
+  .mini-cal-cell {
+    font-size: 0.85rem;
+  }
+
+  .cal-pick-opt {
+    min-height: 44px;
+    padding: 0 0.85rem;
+  }
+
+  .cal-pick-opt input {
+    width: 20px;
+    height: 20px;
+  }
+
   .check-row,
   .settings-toggle-row,
   .holiday-check {
@@ -1852,6 +2076,22 @@ button.mini-cal-cell:hover {
   input[type="time"].date-empty::before {
     content: attr(placeholder);
     color: #454c5e;
+  }
+}
+
+/* Windows high contrast: box-shadow rings are dropped, so mark with outlines. */
+@media (forced-colors: active) {
+  .mini-cal-cell.today {
+    outline: 1px dashed CanvasText;
+    outline-offset: -4px;
+  }
+
+  .mini-cal-cell.endpoint {
+    border: 2px solid Highlight;
+  }
+
+  .mini-cal-cell:focus-visible {
+    outline: 2px solid Highlight;
   }
 }
 
@@ -2007,7 +2247,8 @@ label {
   .copy-btn,
   .utility-btn,
   .mode-btn {
-    min-height: 42px;
+    /* Phone-first: never below the 44px touch target the coarse rules set. */
+    min-height: 44px;
   }
 }
 
@@ -2028,6 +2269,37 @@ label {
       calc(0.75rem + env(safe-area-inset-right, 0px))
       calc(1.5rem + env(safe-area-inset-bottom, 0px))
       calc(0.75rem + env(safe-area-inset-left, 0px));
+  }
+
+  /* Calendars (v1.1.0): the day grid uses the panel's side padding, so a
+     cell is about 42-47 px wide at 360-440 px; the Business Days pick
+     toggle becomes two thumb-sized halves right above the grid. */
+  .mini-cal-weekdays,
+  .mini-cal-grid {
+    margin-left: -0.45rem;
+    margin-right: -0.45rem;
+  }
+
+  .cal-pick-legend {
+    flex: 0 0 100%;
+    margin-right: 0;
+  }
+
+  .cal-pick-opt {
+    flex: 1 1 0;
+    justify-content: center;
+  }
+
+  .history-readonly-actions .calc-btn,
+  .history-readonly-actions .reset-btn {
+    flex: 1 1 auto;
+  }
+}
+
+@media (max-width: 400px) {
+  .calc-section {
+    padding-left: 0.6rem;
+    padding-right: 0.6rem;
   }
 }
 </style>
@@ -2235,16 +2507,24 @@ label {
         <div class="live-result" id="bizLiveResult">→ —</div>
 
         <div class="mini-cal" id="bizCal">
+          <fieldset class="cal-pick" id="bizCalPick">
+            <legend class="cal-pick-legend">Calendar click sets</legend>
+            <label class="cal-pick-opt" for="bizPickStart"><input type="radio" name="bizPick" id="bizPickStart" value="start" checked><span>start</span></label>
+            <label class="cal-pick-opt" for="bizPickEnd"><input type="radio" name="bizPick" id="bizPickEnd" value="end"><span>end</span></label>
+          </fieldset>
+          <div class="cal-pick-hint" id="bizCalHint" role="status" aria-live="polite">Next click sets the start date.</div>
           <div class="mini-cal-head">
             <button class="mini-cal-nav" id="bizCalPrevBtn" type="button" aria-label="Previous month" aria-controls="bizCalGrid">‹</button>
             <div class="mini-cal-title" id="bizCalTitle" aria-live="polite">—</div>
             <button class="mini-cal-nav" id="bizCalNextBtn" type="button" aria-label="Next month" aria-controls="bizCalGrid">›</button>
+            <button class="mini-cal-nav mini-cal-today" id="bizCalTodayBtn" type="button" aria-label="today, show the current month" aria-controls="bizCalGrid">today</button>
           </div>
           <div class="mini-cal-weekdays" id="bizCalWeekdays" aria-hidden="true">
             <span class="mini-cal-dow">Mon</span><span class="mini-cal-dow">Tue</span><span class="mini-cal-dow">Wed</span><span class="mini-cal-dow">Thu</span><span class="mini-cal-dow">Fri</span><span class="mini-cal-dow weekend">Sat</span><span class="mini-cal-dow weekend">Sun</span>
           </div>
           <div class="mini-cal-grid" id="bizCalGrid" role="group" aria-labelledby="bizCalTitle"></div>
           <div class="mini-cal-legend" aria-hidden="true">
+            <span class="legend-item"><span class="legend-swatch swatch-endpoint"></span>start / end</span>
             <span class="legend-item"><span class="legend-swatch swatch-range"></span>in range</span>
             <span class="legend-item"><span class="legend-swatch swatch-weekend"></span>weekend</span>
             <span class="legend-item"><span class="legend-swatch swatch-holiday"></span>holiday</span>
@@ -2344,6 +2624,7 @@ label {
             <button class="mini-cal-nav" id="infoCalPrevBtn" type="button" aria-label="Previous month" aria-controls="infoCalGrid">‹</button>
             <div class="mini-cal-title" id="infoCalTitle" aria-live="polite">—</div>
             <button class="mini-cal-nav" id="infoCalNextBtn" type="button" aria-label="Next month" aria-controls="infoCalGrid">›</button>
+            <button class="mini-cal-nav mini-cal-today" id="infoCalTodayBtn" type="button" aria-label="today, show the current month" aria-controls="infoCalGrid">today</button>
           </div>
           <div class="mini-cal-weekdays" id="infoCalWeekdays" aria-hidden="true">
             <span class="mini-cal-dow">Mon</span><span class="mini-cal-dow">Tue</span><span class="mini-cal-dow">Wed</span><span class="mini-cal-dow">Thu</span><span class="mini-cal-dow">Fri</span><span class="mini-cal-dow weekend">Sat</span><span class="mini-cal-dow weekend">Sun</span>
@@ -2384,6 +2665,10 @@ label {
           <label for="cdTime">Target time (optional, local)</label>
           <input class="date-input date-empty" type="time" id="cdTime" step="60" placeholder="HH:MM">
         </div>
+        <div class="cd-saved-note hidden" id="cdSavedNote">
+          <span class="cd-saved-note-text" id="cdSavedNoteText">Saved on this device. It resumes when you reopen the app.</span>
+          <button class="link-btn" id="cdForgetBtn" type="button" aria-label="Forget the saved countdown">Forget</button>
+        </div>
 
         <div class="button-group">
           <button class="calc-btn" id="calcCdBtn" type="button">calculate</button>
@@ -2396,6 +2681,7 @@ label {
 
       <div class="right-panel">
         <div class="formula-title">live formula</div>
+        <div class="cd-phase-row"><span class="cd-phase hidden" id="cdPhase" aria-hidden="true"></span></div>
         <div class="countdown-big" id="cdClock" role="timer" aria-labelledby="cdTitle">—</div>
         <div class="countdown-status" id="cdStatus" role="status" aria-live="polite">Pick a target date to start the countdown.</div>
         <ul class="trace live-formula" id="cdTrace" aria-label="Countdown: calculation steps">
@@ -2408,6 +2694,7 @@ label {
             <button class="mini-cal-nav" id="cdCalPrevBtn" type="button" aria-label="Previous month" aria-controls="cdCalGrid">‹</button>
             <div class="mini-cal-title" id="cdCalTitle" aria-live="polite">—</div>
             <button class="mini-cal-nav" id="cdCalNextBtn" type="button" aria-label="Next month" aria-controls="cdCalGrid">›</button>
+            <button class="mini-cal-nav mini-cal-today" id="cdCalTodayBtn" type="button" aria-label="today, show the current month" aria-controls="cdCalGrid">today</button>
           </div>
           <div class="mini-cal-weekdays" id="cdCalWeekdays" aria-hidden="true">
             <span class="mini-cal-dow">Mon</span><span class="mini-cal-dow">Tue</span><span class="mini-cal-dow">Wed</span><span class="mini-cal-dow">Thu</span><span class="mini-cal-dow">Fri</span><span class="mini-cal-dow weekend">Sat</span><span class="mini-cal-dow weekend">Sun</span>
@@ -2449,12 +2736,27 @@ label {
         </div>
       </div>
     </div>
+    <div class="history-readonly hidden" id="historyReadOnlyBanner">
+      <div class="history-readonly-text" role="status" aria-live="polite" aria-atomic="true">
+        <span class="history-readonly-title" id="historyReadOnlyText">History could not be read safely. Nothing will be overwritten.</span>
+        <span class="history-readonly-detail" id="historyReadOnlyDetail"></span>
+      </div>
+      <div class="history-readonly-actions">
+        <button class="calc-btn" id="historyRetryBtn" type="button">retry</button>
+        <button class="reset-btn" id="historyResetBtn" type="button">start a new history</button>
+        <div class="confirm-group hidden" id="historyResetConfirm">
+          <span class="confirm-label">start a new, empty history? The current history is kept as a backup copy.</span>
+          <button class="calc-btn confirm-yes-btn" id="confirmHistoryResetBtn" type="button">yes, start new</button>
+          <button class="reset-btn" id="cancelHistoryResetBtn" type="button">cancel</button>
+        </div>
+      </div>
+    </div>
     <div class="history-list" id="historyList">
       <div class="history-empty">No calculations recorded yet. Press calculate, Enter, or copy on any card to save to history.</div>
     </div>
   </div>
 
-  <footer>Mohamed Sayed · Ahmed Emara · built with Claude (Anthropic) · 2026 · <span id="appVersion">Mobile &amp; Web v1.0.0</span></footer>
+  <footer>Mohamed Sayed · Ahmed Emara · built with Claude (Anthropic) · 2026 · <span id="appVersion">Mobile &amp; Web v1.1.0</span></footer>
 </div>
 
 <div class="modal-backdrop hidden" id="aboutModal" role="dialog" aria-modal="true" aria-labelledby="aboutModalTitle">
@@ -2468,7 +2770,7 @@ label {
       <div class="about-icon-badge" aria-hidden="true">31</div>
       <div>
         <div class="about-app-name" id="aboutAppName">Date Calculator Tool</div>
-        <div class="about-version-pill" id="aboutVersionPill">Mobile &amp; Web v1.0.0 · Offline HTML / PWA</div>
+        <div class="about-version-pill" id="aboutVersionPill">Mobile &amp; Web v1.1.0 · Offline HTML / PWA</div>
       </div>
     </div>
 
@@ -6043,7 +6345,7 @@ const HIJRI_OFFSET_MAX = 2;
 const HIJRI_YEAR_MIN = 1317;
 const HIJRI_YEAR_MAX = 1626;
 const ROLLOVER_CHECK_MS = 60000;
-const APP_VERSION = "1.0.0";
+const APP_VERSION = "1.1.0";
 const APP_NAME = "Date Calculator Tool";
 const WEB_APP_URL = "https://ciphervaults.github.io/Date-Calculator-Tool/";
 const RELEASE_URL =
@@ -6059,11 +6361,13 @@ const UPDATE_FETCH_TIMEOUT_MS = 8000;
 const UPDATE_MAX_BYTES = 65536;
 const HISTORY_STORAGE_KEY = "date_tool_history_v1";
 const SETTINGS_STORAGE_KEY = "date_tool_settings_v1";
+const COUNTDOWN_STORAGE_KEY = "date_tool_countdown_v1";
 const BACKUP_KEY_SUFFIX = "_bak";
 const HISTORY_LIMIT = 500;
 // The desktop file caps (commands.rs), applied to the stored JSON text.
 const HISTORY_MAX_BYTES = 1024 * 1024;
 const SETTINGS_MAX_BYTES = 64 * 1024;
+const COUNTDOWN_MAX_BYTES = 1024;
 const BACKUP_MAX_BYTES = 1024 * 1024;
 const SETTINGS_SCHEMA_VERSION = 1;
 // date_core::api::MAX_REQUEST_BYTES (the desktop's IPC request cap).
@@ -6255,6 +6559,10 @@ const NEW_HISTORY_ENTRY_KEYS = HISTORY_ENTRY_KEYS.slice(2);
 
 let historyEntries = [];
 let historyNextId = 1;
+// commands.rs HistoryReadOnlyReason: null (writable), "corrupt", "too_large"
+// or "newer_schema". While set, nothing writes the stored history until a
+// retry reads it cleanly or the user explicitly starts a new history.
+let historyReadOnlyState = null;
 
 function engineAccepts(envelope) {
   return Boolean(envelope) && envelope.ok === "true";
@@ -6347,29 +6655,113 @@ function sanitizeStoredEntry(item) {
   };
 }
 
+// Reads a `schemaVersion` newer than `current` from a raw JSON object, so a
+// value written by a newer version is recognised before any strict parse
+// (commands.rs declares_newer_schema).
+function declaresNewerSchema(value, current) {
+  return (
+    isPlainObject(value) &&
+    Object.hasOwn(value, "schemaVersion") &&
+    Number.isSafeInteger(value.schemaVersion) &&
+    value.schemaVersion > current
+  );
+}
+
+// commands.rs load_history_from_path (plan A3): a stored history that cannot
+// be read safely is never replaced by an empty one.
+// - no value → empty, writable;
+// - over the cap → read-only "too_large", nothing backed up;
+// - a newer `schemaVersion` object → read-only "newer_schema", no backup;
+// - bad JSON, a wrong shape, or any entry dropped by validation (or past the
+//   500-entry cap) → `_bak` once, then read-only "corrupt"; the entries
+//   that did validate are still listed.
 function loadHistoryState() {
   const raw = storageGet(HISTORY_STORAGE_KEY);
-  let entries = [];
+  const entries = [];
+  let readOnly = null;
   if (raw !== null) {
     let parsed;
-    try {
-      parsed = utf8Length(raw) <= HISTORY_MAX_BYTES ? JSON.parse(raw) : undefined;
-    } catch {
-      parsed = undefined;
-    }
-    if (Array.isArray(parsed)) {
-      for (const item of parsed) {
-        const clean = sanitizeStoredEntry(item);
-        if (clean) entries.push(clean);
-        if (entries.length >= HISTORY_LIMIT) break;
-      }
+    if (utf8Length(raw) > HISTORY_MAX_BYTES) {
+      readOnly = "too_large";
     } else {
-      backupCorruptValueOnce(HISTORY_STORAGE_KEY, raw);
-      entries = [];
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        parsed = undefined;
+      }
+      if (declaresNewerSchema(parsed, 1)) {
+        readOnly = "newer_schema";
+      } else if (Array.isArray(parsed)) {
+        for (const item of parsed) {
+          const clean = sanitizeStoredEntry(item);
+          if (clean && entries.length < HISTORY_LIMIT) entries.push(clean);
+          else readOnly = "corrupt";
+        }
+      } else {
+        readOnly = "corrupt";
+      }
     }
+    if (readOnly === "corrupt") backupCorruptValueOnce(HISTORY_STORAGE_KEY, raw);
   }
   historyEntries = entries;
-  historyNextId = entries.reduce((max, e) => Math.max(max, e.id + 1), 1);
+  historyReadOnlyState = readOnly;
+  // Ids never go backwards, so a stale row can never alias a new entry.
+  historyNextId = entries.reduce((max, e) => Math.max(max, e.id + 1), historyNextId);
+}
+
+function refuseWhenHistoryReadOnly() {
+  if (historyReadOnlyState !== null) throw new Error("history_read_only");
+}
+
+// ----- History read-only state (history_state / history_retry / history_reset)
+
+function historyStatus() {
+  return { readOnly: historyReadOnlyState !== null, reason: historyReadOnlyState };
+}
+
+// The banner's Retry: read the stored history again.
+function historyRetry() {
+  loadHistoryState();
+  return historyStatus();
+}
+
+// `<key>_bak` → a free `<key>_bak_<ms>` (or `_<ms>_<n>`), so a second backup
+// never replaces the first (commands.rs unique_backup_path).
+function uniqueBackupKey(bakKey) {
+  const ms = Date.now();
+  for (let n = 0; n < 100; n += 1) {
+    const key = n === 0 ? `${bakKey}_${ms}` : `${bakKey}_${ms}_${n}`;
+    if (storageGet(key) === null) return key;
+  }
+  return null;
+}
+
+// The banner's confirmed "Start a new history" (commands.rs
+// history_reset_with_path). Only while read-only. The current value is never
+// discarded unless an identical copy is already in `_bak` (the corrupt case,
+// copied at load): otherwise it is kept first, in `_bak` when that is free
+// and in a fresh `_bak_<ms>` when it is not (an existing backup is never
+// replaced). Then an empty history is stored and history becomes writable.
+// Any failure keeps the read-only state.
+function historyReset() {
+  if (historyReadOnlyState === null) throw new Error("history_not_read_only");
+  const raw = storageGet(HISTORY_STORAGE_KEY);
+  const bakKey = `${HISTORY_STORAGE_KEY}${BACKUP_KEY_SUFFIX}`;
+  if (raw !== null) {
+    const kept = storageGet(bakKey);
+    if (kept !== raw) {
+      const keepKey = kept === null ? bakKey : uniqueBackupKey(bakKey);
+      if (keepKey === null || !storageSet(keepKey, raw)) {
+        if (keepKey !== null) memoryStore.delete(keepKey);
+        throw new Error("Failed to keep the old history on this device.");
+      }
+    }
+  }
+  if (!storageSet(HISTORY_STORAGE_KEY, serializeHistory([]))) {
+    throw new Error("Failed to start a new history on this device.");
+  }
+  historyEntries = [];
+  historyReadOnlyState = null;
 }
 
 function cloneJson(value) {
@@ -6412,6 +6804,7 @@ function historyInputsEqual(a, b) {
 }
 
 function historyAdd(newEntry) {
+  refuseWhenHistoryReadOnly();
   if (
     !isPlainObject(newEntry) ||
     !hasOnlyKeys(newEntry, NEW_HISTORY_ENTRY_KEYS) ||
@@ -6466,6 +6859,7 @@ function historyAdd(newEntry) {
 }
 
 function historyDelete(id) {
+  refuseWhenHistoryReadOnly();
   if (!isU64(id)) throw new Error("invalid history id");
   const next = historyEntries.filter((e) => e.id !== id);
   if (next.length === historyEntries.length) return cloneJson(historyEntries);
@@ -6475,9 +6869,102 @@ function historyDelete(id) {
 }
 
 function historyClear() {
+  refuseWhenHistoryReadOnly();
   storageRemove(HISTORY_STORAGE_KEY);
   historyEntries = [];
   return [];
+}
+
+// ----- Countdown (countdown_load / countdown_save / countdown_clear, A2)
+
+// commands.rs CountdownState: exactly these keys (deny_unknown_fields).
+const COUNTDOWN_STATE_KEYS = [
+  "schemaVersion",
+  "targetDate",
+  "targetTime",
+  "savedAtMs",
+  "finishedSeenAtMs"
+];
+const COUNTDOWN_SCHEMA_VERSION = 1;
+
+// commands.rs validate_countdown_state: the history validators for a
+// countdown entry (targetDate a date, targetTime "" or a time), plus schema
+// 1, a time of "" or exactly HH:MM, and JS-safe timestamps. A missing
+// finishedSeenAtMs reads as null (serde Option); every other key is required.
+function parseCountdownState(value) {
+  if (!isPlainObject(value) || !hasOnlyKeys(value, COUNTDOWN_STATE_KEYS)) return null;
+  if (!COUNTDOWN_STATE_KEYS.slice(0, 4).every((k) => Object.hasOwn(value, k))) return null;
+  const finished = Object.hasOwn(value, "finishedSeenAtMs") ? value.finishedSeenAtMs : null;
+  if (value.schemaVersion !== COUNTDOWN_SCHEMA_VERSION) return null;
+  if (typeof value.targetDate !== "string" || typeof value.targetTime !== "string") return null;
+  if (!validateInputValue("date", "target.date", value.targetDate)) return null;
+  if (!(value.targetTime === "" || value.targetTime.length === 5)) return null;
+  if (!validateInputValue("optionalTime", "target.time", value.targetTime)) return null;
+  if (!isU64(value.savedAtMs) || !(finished === null || isU64(finished))) return null;
+  return {
+    schemaVersion: COUNTDOWN_SCHEMA_VERSION,
+    targetDate: value.targetDate,
+    targetTime: value.targetTime,
+    savedAtMs: value.savedAtMs,
+    finishedSeenAtMs: finished
+  };
+}
+
+function storedCountdownIsNewer() {
+  const raw = storageGet(COUNTDOWN_STORAGE_KEY);
+  if (raw === null || utf8Length(raw) > BACKUP_MAX_BYTES) return false;
+  try {
+    return declaresNewerSchema(JSON.parse(raw), COUNTDOWN_SCHEMA_VERSION);
+  } catch {
+    return false;
+  }
+}
+
+// commands.rs load_countdown_from_path. `schemaVersion` is read from the
+// raw value first: a newer record is ignored and never written or backed
+// up. Anything else invalid (a value over the 1,024-character cap included:
+// on a phone there is no transient read error to wait out) is copied once
+// to `_bak` and reported as "corrupt" with no state.
+function countdownLoad() {
+  const raw = storageGet(COUNTDOWN_STORAGE_KEY);
+  if (raw === null) return { state: null, status: "empty" };
+  if (storedCountdownIsNewer()) return { state: null, status: "newer" };
+  let state = null;
+  if (utf8Length(raw) <= COUNTDOWN_MAX_BYTES) {
+    try {
+      state = parseCountdownState(JSON.parse(raw));
+    } catch {
+      state = null;
+    }
+  }
+  if (state) return { state, status: "ok" };
+  backupCorruptValueOnce(COUNTDOWN_STORAGE_KEY, raw);
+  return { state: null, status: "corrupt" };
+}
+
+function countdownSave(value) {
+  const state = parseCountdownState(value);
+  if (!state) throw new Error("invalid countdown state");
+  const text = JSON.stringify(state);
+  if (utf8Length(text) > COUNTDOWN_MAX_BYTES) {
+    throw new Error("serialized countdown exceeds max allowed size");
+  }
+  if (storedCountdownIsNewer()) throw new Error("countdown_newer_schema");
+  const previousText = memoryStore.has(COUNTDOWN_STORAGE_KEY)
+    ? memoryStore.get(COUNTDOWN_STORAGE_KEY)
+    : null;
+  if (!storageSet(COUNTDOWN_STORAGE_KEY, text)) {
+    if (previousText === null) memoryStore.delete(COUNTDOWN_STORAGE_KEY);
+    else memoryStore.set(COUNTDOWN_STORAGE_KEY, previousText);
+    throw new Error("Failed to save the countdown on this device.");
+  }
+}
+
+// Removes exactly this key (never its `_bak`, never localStorage.clear()).
+// A newer-schema record is left in place.
+function countdownClear() {
+  if (storedCountdownIsNewer()) return;
+  storageRemove(COUNTDOWN_STORAGE_KEY);
 }
 
 // ----- Settings (get_settings / set_settings)
@@ -6598,6 +7085,43 @@ function $(id) {
 function str(value) {
   return typeof value === "string" ? value : "";
 }
+
+// ---------------------------------------------------------------------------
+// Shared UI text (v1.1.0). mobile/index.html carries a byte-identical copy of
+// this table (cross-surface-text): change both together.
+// ---------------------------------------------------------------------------
+
+const UI_TEXT = Object.freeze({
+  calSuffixStart: ", start",
+  calSuffixEnd: ", end",
+  calSuffixSelected: ", selected",
+  calHintStart: "Next click sets the start date.",
+  calHintEnd: "Next click sets the end date.",
+  cdIdle: "Pick a target date to start the countdown.",
+  cdCounting: (when) => `Counting down to ${when}.`,
+  cdRestored: (left, when) => `Countdown restored: ${left} left until ${when}.`,
+  cdFinished: (when) => `Finished: ${when} has passed. Counting the time since.`,
+  cdFinishedClosed: (when) =>
+    `Finished while the app was closed: ${when}. Counting the time since.`,
+  cdStopped: (message) => `Countdown stopped: ${message}`,
+  cdPhaseCounting: "counting down",
+  cdPhaseRestored: "restored",
+  cdPhaseFinished: "finished",
+  cdPhaseFinishedClosed: "finished while closed",
+  cdSavedNote: "Saved on this device. It resumes when you reopen the app.",
+  cdForget: "Forget",
+  cdNewerNote: "Saved countdown is from a newer version.",
+  cdUnreadableNote: "The saved countdown could not be read, so it is left untouched.",
+  cdWriteFailedNote: "The countdown could not be saved on this device.",
+  cdSessionNote: "Kept for this session only. This browser is not saving site data.",
+  historyReadOnly: "History could not be read safely. Nothing will be overwritten.",
+  historyReasonReadError:
+    "The history file could not be read. Another program may be using it.",
+  historyReasonTooLarge: "The history file is larger than the size limit.",
+  historyReasonCorrupt: "The history file is damaged or has entries that cannot be read.",
+  historyReasonNewer: "The history file is from a newer version of the app.",
+  historyResetFailed: "A new history could not be started. Try again."
+});
 
 // ---------------------------------------------------------------------------
 // Cards
@@ -7265,10 +7789,15 @@ function updateCalendarSummaries() {
 // ---------------------------------------------------------------------------
 
 const calViews = {
-  biz: { prefix: "bizCal", year: 0, month: 0, rangeStart: null, rangeEnd: null, seq: 0, last: null },
-  info: { prefix: "infoCal", year: 0, month: 0, rangeStart: null, rangeEnd: null, seq: 0, last: null },
-  cd: { prefix: "cdCal", year: 0, month: 0, rangeStart: null, rangeEnd: null, seq: 0, last: null }
+  biz: { prefix: "bizCal", year: 0, month: 0, rangeStart: null, rangeEnd: null, seq: 0, last: null, focusDate: "" },
+  info: { prefix: "infoCal", year: 0, month: 0, rangeStart: null, rangeEnd: null, seq: 0, last: null, focusDate: "" },
+  cd: { prefix: "cdCal", year: 0, month: 0, rangeStart: null, rangeEnd: null, seq: 0, last: null, focusDate: "" }
 };
+
+// A calendar click moves the Business Days view to the clicked month. It is
+// set only by a click and consumed once by updateBusinessLive; typed input
+// keeps the v1.0.0 anchoring (the earlier date).
+const calAnchorOverride = { biz: null };
 
 function setCalendarView(key, { anchor = null, rangeStart = null, rangeEnd = null } = {}) {
   const view = calViews[key];
@@ -7291,6 +7820,16 @@ function shiftCalendar(key, delta) {
   );
   view.year = Math.floor(idx / 12);
   view.month = (idx % 12) + 1;
+  return refreshMiniCal(key);
+}
+
+// The header "today" button changes the view only; it never selects.
+function showCalendarToday(key) {
+  const view = calViews[key];
+  const t = parseIso(todayIso());
+  if (!t) return Promise.resolve(null);
+  view.year = t.y;
+  view.month = t.m;
   return refreshMiniCal(key);
 }
 
@@ -7319,8 +7858,19 @@ async function refreshMiniCal(key) {
   return grid;
 }
 
-function miniCalCell(cell) {
-  const el = document.createElement("span");
+// Selection marks come from the field values, never from the engine range
+// flags: the engine range is [earlier, later) and its end can be the day
+// before the later date (FROZEN §5).
+function calMarks(key) {
+  if (key === "biz") return { start: readDate("bizStart"), end: readDate("bizEnd"), selected: "" };
+  if (key === "info") return { start: "", end: "", selected: readDate("infoDate") };
+  return { start: "", end: "", selected: readDate("cdTarget") };
+}
+
+function miniCalCell(cell, marks) {
+  const el = document.createElement("button");
+  el.type = "button";
+  const date = str(cell.date);
   const classes = ["mini-cal-cell"];
   if (!cell.inMonth) classes.push("out");
   if (cell.outOfRange) classes.push("out-of-range");
@@ -7330,16 +7880,48 @@ function miniCalCell(cell) {
     if (cell.approximate) classes.push("approx");
   }
   if (cell.inRange) classes.push("in-range");
-  if (cell.isRangeStart || cell.isRangeEnd) classes.push("endpoint");
+  let suffix = "";
+  if (date && date === marks.start) {
+    classes.push("pick-start");
+    suffix += UI_TEXT.calSuffixStart;
+  }
+  if (date && date === marks.end) {
+    classes.push("pick-end");
+    suffix += UI_TEXT.calSuffixEnd;
+  }
+  if (date && date === marks.selected) {
+    classes.push("selected");
+    suffix += UI_TEXT.calSuffixSelected;
+  }
+  if (suffix) classes.push("endpoint");
   if (cell.isToday) classes.push("today");
   el.className = classes.join(" ");
   el.textContent = typeof cell.day === "number" ? String(cell.day) : "";
-  const label = str(cell.label);
-  el.setAttribute("role", "img");
-  el.setAttribute("aria-label", label || str(cell.date));
+  const label = str(cell.label) || date;
+  el.setAttribute("aria-label", `${label}${suffix}`);
+  if (suffix) el.setAttribute("aria-pressed", "true");
+  if (cell.isToday) el.setAttribute("aria-current", "date");
   if (label) el.title = label;
-  el.dataset.date = str(cell.date);
+  el.dataset.date = date;
+  el.setAttribute("tabindex", "-1");
+  if (cell.outOfRange) el.disabled = true;
   return el;
+}
+
+// Exactly one tab stop per grid: the focused date if it is shown, else the
+// last focused date, a selected date or endpoint, today, or the 1st.
+function rovingDate(view, cells, marks, keep) {
+  const shown = (iso, inMonthOnly) =>
+    Boolean(iso) &&
+    cells.some((c) => c.date === iso && !c.outOfRange && (!inMonthOnly || c.inMonth));
+  if (shown(keep, false)) return keep;
+  for (const iso of [view.focusDate, marks.start, marks.end, marks.selected]) {
+    if (shown(iso, true)) return iso;
+  }
+  const today = cells.find((c) => c.isToday && c.inMonth && !c.outOfRange);
+  if (today) return str(today.date);
+  const first = cells.find((c) => c.inMonth && !c.outOfRange);
+  return first ? str(first.date) : "";
 }
 
 function paintMiniCal(key, grid) {
@@ -7366,9 +7948,201 @@ function paintMiniCal(key, grid) {
       return span(cell && cell.weekend ? "mini-cal-dow weekend" : "mini-cal-dow", str(h));
     })
   );
-  body.replaceChildren(
-    ...grid.cells.filter((c) => c && typeof c === "object").map(miniCalCell)
-  );
+  // Focus survives the repaint: a keyboard move names the new date in
+  // view.focusDate; otherwise the focused cell's own date is kept.
+  const active = document.activeElement;
+  const hadFocus = Boolean(active && active !== body && body.contains(active));
+  const keep = hadFocus ? view.focusDate || str(active.dataset?.date) : "";
+  const cells = grid.cells.filter((c) => c && typeof c === "object");
+  const marks = calMarks(key);
+  const nodes = cells.map((c) => miniCalCell(c, marks));
+  const stop = rovingDate(view, cells, marks, keep);
+  const stopNode = nodes.find((n) => n.dataset.date === stop) || null;
+  if (stopNode) stopNode.setAttribute("tabindex", "0");
+  body.replaceChildren(...nodes);
+  if (hadFocus && stopNode) stopNode.focus({ preventScroll: true });
+}
+
+function setRovingStop(body, node) {
+  Array.from(body.children).forEach((n) => {
+    n.setAttribute("tabindex", n === node ? "0" : "-1");
+  });
+}
+
+// ± days or months through the engine (month ends clamp), or null at the
+// ends of the 0001-01-01..9999-12-31 range.
+async function engineShiftDate(iso, { days = 0, months = 0 } = {}) {
+  if (!isIsoDate(iso) || (days === 0 && months === 0)) return null;
+  try {
+    const r = okResult(
+      await engine("calc_add_subtract", {
+        date: iso,
+        operation: days < 0 || months < 0 ? "subtract" : "add",
+        years: "",
+        months: months ? String(Math.abs(months)) : "",
+        weeks: "",
+        days: days ? String(Math.abs(days)) : "",
+        businessDays: false,
+        calendar: currentCalendar()
+      })
+    );
+    return r && isIsoDate(r.resultDate) ? r.resultDate : null;
+  } catch {
+    return null;
+  }
+}
+
+// Moving focus never selects. Leaving the shown month moves the view; the
+// ends of the range and disabled cells stop the move.
+async function moveMiniCalFocus(key, cell, step) {
+  const view = calViews[key];
+  const body = $(`${view.prefix}Grid`);
+  if (!body) return;
+  const nodes = Array.from(body.children);
+  const from = str(cell.dataset.date);
+  let target = "";
+  if (!step.months) {
+    const j = nodes.indexOf(cell) + step.days;
+    if (j >= 0 && j < nodes.length) target = str(nodes[j].dataset.date);
+  }
+  if (!target) target = (await engineShiftDate(from, step)) || "";
+  const t = parseIso(target);
+  if (!t) return;
+  const node = Array.from(body.children).find((n) => n.dataset.date === target) || null;
+  if (node && node.disabled) return;
+  view.focusDate = target;
+  if (node && t.y === view.year && t.m === view.month) {
+    setRovingStop(body, node);
+    node.focus();
+    return;
+  }
+  view.year = t.y;
+  view.month = t.m;
+  await refreshMiniCal(key);
+}
+
+function onMiniCalKeydown(key, event) {
+  const cell =
+    event.target && typeof event.target.closest === "function"
+      ? event.target.closest(".mini-cal-cell")
+      : null;
+  if (!cell || event.altKey || event.ctrlKey || event.metaKey) return;
+  const k = event.key;
+  if (k === "Enter" || k === " " || k === "Spacebar") {
+    // Handled here (not by the native click) so Shift+Enter reaches the pick.
+    event.preventDefault();
+    if (!cell.disabled) onMiniCalPick(key, str(cell.dataset.date), { shift: event.shiftKey });
+    return;
+  }
+  const body = $(`${calViews[key].prefix}Grid`);
+  const col = body ? Array.from(body.children).indexOf(cell) % 7 : 0;
+  const year = event.shiftKey ? 12 : 1;
+  const steps = {
+    ArrowLeft: { days: -1 },
+    ArrowRight: { days: 1 },
+    ArrowUp: { days: -7 },
+    ArrowDown: { days: 7 },
+    Home: { days: -col },
+    End: { days: 6 - col },
+    PageUp: { months: -year },
+    PageDown: { months: year }
+  };
+  if (!Object.hasOwn(steps, k)) return;
+  event.preventDefault();
+  const step = { days: 0, months: 0, ...steps[k] };
+  if (step.days === 0 && step.months === 0) return;
+  moveMiniCalFocus(key, cell, step);
+}
+
+// ---------------------------------------------------------------------------
+// Calendar picks (A1). A pick fills a field and recomputes that card; it
+// never writes history (only calculate, Enter and copy do).
+// ---------------------------------------------------------------------------
+
+let bizPickTarget = "start";
+
+function setBizPickTarget(target) {
+  bizPickTarget = target === "end" ? "end" : "start";
+  const start = $("bizPickStart");
+  const end = $("bizPickEnd");
+  if (start) start.checked = bizPickTarget === "start";
+  if (end) end.checked = bizPickTarget === "end";
+  const hint = $("bizCalHint");
+  const text = bizPickTarget === "end" ? UI_TEXT.calHintEnd : UI_TEXT.calHintStart;
+  if (hint && hint.textContent !== text) hint.textContent = text;
+}
+
+// Start if the start date is empty, else End if the end date is empty, else Start.
+function resetBizPickTarget() {
+  setBizPickTarget(readDate("bizStart") && !readDate("bizEnd") ? "end" : "start");
+}
+
+async function onMiniCalPick(key, iso, { shift = false } = {}) {
+  if (!isIsoDate(iso) || !Object.hasOwn(calViews, key)) return;
+  calViews[key].focusDate = iso;
+  if (key === "info") {
+    setField("infoDate", iso);
+    await updateInfoLive();
+    return;
+  }
+  if (key === "cd") {
+    // The target time is kept; a past day shows the finished state.
+    setField("cdTarget", iso);
+    persistCountdown();
+    await updateCountdownLive();
+    return;
+  }
+  const target = shift ? "end" : bizPickTarget;
+  setField(target === "end" ? "bizEnd" : "bizStart", iso);
+  setBizPickTarget(target === "end" ? "start" : "end");
+  calAnchorOverride.biz = iso;
+  await updateBusinessLive();
+}
+
+function bindMiniCalendars() {
+  Object.keys(calViews).forEach((key) => {
+    const p = calViews[key].prefix;
+    $(`${p}PrevBtn`)?.addEventListener("click", () => shiftCalendar(key, -1));
+    $(`${p}NextBtn`)?.addEventListener("click", () => shiftCalendar(key, 1));
+    $(`${p}TodayBtn`)?.addEventListener("click", () => showCalendarToday(key));
+    const body = $(`${p}Grid`);
+    if (!body) return;
+    body.addEventListener("click", (event) => {
+      const cell =
+        event.target && typeof event.target.closest === "function"
+          ? event.target.closest(".mini-cal-cell")
+          : null;
+      if (!cell || cell.disabled || !body.contains(cell)) return;
+      onMiniCalPick(key, str(cell.dataset.date), { shift: Boolean(event.shiftKey) });
+    });
+    body.addEventListener("keydown", (event) => onMiniCalKeydown(key, event));
+    body.addEventListener("focusin", (event) => {
+      const cell =
+        event.target && typeof event.target.closest === "function"
+          ? event.target.closest(".mini-cal-cell")
+          : null;
+      if (!cell || !body.contains(cell)) return;
+      calViews[key].focusDate = str(cell.dataset.date);
+      setRovingStop(body, cell);
+    });
+  });
+
+  ["bizPickStart", "bizPickEnd"].forEach((id) => {
+    $(id)?.addEventListener("change", (event) => {
+      const radio = event.currentTarget;
+      setBizPickTarget(radio.checked ? radio.value : bizPickTarget);
+    });
+  });
+  $("bizStart")?.addEventListener("focus", () => setBizPickTarget("start"));
+  $("bizEnd")?.addEventListener("focus", () => setBizPickTarget("end"));
+  // A date committed by typing moves the calendar on to the other, still-empty end,
+  // so the next tap fills it instead of overwriting the date just typed.
+  $("bizStart")?.addEventListener("change", () => {
+    if (readDate("bizStart") && !readDate("bizEnd")) setBizPickTarget("end");
+  });
+  $("bizEnd")?.addEventListener("change", () => {
+    if (readDate("bizEnd") && !readDate("bizStart")) setBizPickTarget("start");
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -7574,12 +8348,19 @@ async function updateBusinessLive() {
   const startDate = readDate("bizStart");
   const endDate = readDate("bizEnd");
   const includeEndDay = Boolean($("bizIncludeEnd")?.checked);
+  // Consumed once: only the update a calendar click started follows it.
+  const clickedAnchor = calAnchorOverride.biz;
+  calAnchorOverride.biz = null;
 
   if (!startDate || !endDate) {
     cardIdle("business");
     renderHolidayHits(null);
     const single = startDate || endDate || null;
-    await setCalendarView("biz", { anchor: single, rangeStart: single, rangeEnd: single });
+    await setCalendarView("biz", {
+      anchor: clickedAnchor || single,
+      rangeStart: single,
+      rangeEnd: single
+    });
     return;
   }
 
@@ -7650,7 +8431,11 @@ async function updateBusinessLive() {
       if (ticket !== seq.business) return;
       rangeEnd = prev && isIsoDate(prev.resultDate) ? prev.resultDate : later;
     }
-    await setCalendarView("biz", { anchor: earlier, rangeStart: earlier, rangeEnd });
+    await setCalendarView("biz", {
+      anchor: clickedAnchor || earlier,
+      rangeStart: earlier,
+      rangeEnd
+    });
   } catch {
     if (ticket !== seq.business) return;
     cardError("business", "Calculation failed.");
@@ -7837,6 +8622,312 @@ let cdActive = false;
 let cdTimer = 0;
 let cdStatusKey = "";
 
+// ---------------------------------------------------------------------------
+// Countdown persistence (A2): countdown.json through countdown_load / _save /
+// _clear. Saved on commit only (change, pills, today, calendar click, history
+// restore, and a flush when the page is hidden), never on input or a tick.
+// An empty or invalid field never clears the record; only Forget and Clear do.
+// ---------------------------------------------------------------------------
+
+const CD_SCHEMA_VERSION = 1;
+const CD_STATE_KEYS = ["schemaVersion", "targetDate", "targetTime", "savedAtMs", "finishedSeenAtMs"];
+const CD_TIME_RE = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
+
+let cdStored = null; // the record known to be saved, or null
+let cdLoadStatus = "empty"; // countdown_load status: ok|empty|newer|corrupt|unreadable
+let cdStoreBlocked = false; // newer or unreadable record: never write over it
+let cdForgottenPair = ""; // the pair Forget removed; a page-hide flush skips it
+let cdRestoredPair = ""; // the pair restored at launch ("date|time")
+let cdRestorePending = false; // the first render after a restore is still due
+let cdClosedFinish = false; // that render found it finished, never seen
+let cdWriteFailed = false; // the last countdown save or clear failed
+let cdWriteChain = Promise.resolve();
+
+function cdPair(date, time) {
+  return `${date}|${time}`;
+}
+
+function isSafeMs(value) {
+  return Number.isSafeInteger(value) && value >= 0;
+}
+
+function isCountdownState(s) {
+  return (
+    Boolean(s) &&
+    typeof s === "object" &&
+    !Array.isArray(s) &&
+    Object.keys(s).length === CD_STATE_KEYS.length &&
+    CD_STATE_KEYS.every((k) => Object.hasOwn(s, k)) &&
+    s.schemaVersion === CD_SCHEMA_VERSION &&
+    isIsoDate(s.targetDate) &&
+    parseIso(s.targetDate) !== null &&
+    typeof s.targetTime === "string" &&
+    (s.targetTime === "" || CD_TIME_RE.test(s.targetTime)) &&
+    isSafeMs(s.savedAtMs) &&
+    (s.finishedSeenAtMs === null || isSafeMs(s.finishedSeenAtMs))
+  );
+}
+
+// A field mid-edit (one segment cleared) reads "" with validity.badInput.
+function countdownFieldsPair() {
+  const dateEl = $("cdTarget");
+  const timeEl = $("cdTime");
+  if (dateEl?.validity?.badInput || timeEl?.validity?.badInput) return null;
+  const targetDate = readDate("cdTarget");
+  const targetTime = readDate("cdTime");
+  if (!isIsoDate(targetDate) || parseIso(targetDate) === null) return null;
+  if (targetTime !== "" && !CD_TIME_RE.test(targetTime)) return null;
+  return { targetDate, targetTime };
+}
+
+// Writes run one at a time, in order, so the last commit wins. The returned
+// promise settles with this write's own outcome; the chain never rejects.
+function queueCountdownWrite(run) {
+  const result = cdWriteChain.then(run, run);
+  cdWriteChain = result.then(
+    () => undefined,
+    () => undefined
+  );
+  return result;
+}
+
+// A refusal from the store itself (a newer-version or unreadable record
+// appeared after launch) blocks further writes; any other failure says the
+// countdown is not saved, so the note never claims it is.
+function onCountdownWriteFailed(err) {
+  const reason = String(err ?? "");
+  if (reason.includes("countdown_newer_schema")) {
+    cdStored = null;
+    cdLoadStatus = "newer";
+    cdStoreBlocked = true;
+  } else if (reason.includes("countdown_unreadable")) {
+    cdStored = null;
+    cdLoadStatus = "unreadable";
+    cdStoreBlocked = true;
+  }
+  cdWriteFailed = !cdStoreBlocked;
+  renderCountdownNote();
+}
+
+// When the browser refuses site data, the countdown lives in the session
+// store only and will not resume after the app closes.
+function countdownSessionOnly() {
+  return !usePersistentStorage();
+}
+
+function renderCountdownNote() {
+  const note = $("cdSavedNote");
+  const text = $("cdSavedNoteText");
+  const forget = $("cdForgetBtn");
+  if (!note || !text || !forget) return;
+  let message = "";
+  let canForget = false;
+  if (cdLoadStatus === "newer") {
+    message = UI_TEXT.cdNewerNote;
+  } else if (cdLoadStatus === "unreadable") {
+    message = UI_TEXT.cdUnreadableNote;
+  } else if (cdWriteFailed) {
+    // Forget stays available: it retries removing whatever is stored.
+    message = UI_TEXT.cdWriteFailedNote;
+    canForget = true;
+  } else if (cdStored) {
+    message = countdownSessionOnly() ? UI_TEXT.cdSessionNote : UI_TEXT.cdSavedNote;
+    canForget = true;
+  }
+  // Never an input: focusing one inside a tap opens the phone's picker.
+  if (!canForget && document.activeElement === forget) $("calcCdBtn")?.focus();
+  if (text.textContent !== message) text.textContent = message;
+  forget.classList.toggle("hidden", !canForget);
+  note.classList.toggle("hidden", message === "");
+}
+
+// `explicit` is a user commit; the page-hide flush passes false so it never
+// re-saves a countdown the user just told the app to forget.
+function persistCountdown({ explicit = true } = {}) {
+  if (cdStoreBlocked) return cdWriteChain;
+  const pair = countdownFieldsPair();
+  if (!pair) return cdWriteChain;
+  const key = cdPair(pair.targetDate, pair.targetTime);
+  if (explicit) cdForgottenPair = "";
+  else if (key === cdForgottenPair) return cdWriteChain;
+  if (cdStored && cdPair(cdStored.targetDate, cdStored.targetTime) === key) return cdWriteChain;
+  const state = {
+    schemaVersion: CD_SCHEMA_VERSION,
+    targetDate: pair.targetDate,
+    targetTime: pair.targetTime,
+    savedAtMs: Date.now(),
+    finishedSeenAtMs: null
+  };
+  // Set now so a repeat commit of the same pair is not queued twice; the
+  // saved note waits for the write, and a failed write rolls this back so
+  // the next commit retries.
+  const previous = { stored: cdStored, status: cdLoadStatus };
+  cdStored = state;
+  cdLoadStatus = "ok";
+  if (cdRestoredPair !== key) {
+    cdRestoredPair = "";
+    cdRestorePending = false;
+    cdClosedFinish = false;
+  }
+  return queueCountdownWrite(() => countdownSave({ ...state })).then(
+    () => {
+      if (cdStored !== state) return;
+      cdWriteFailed = false;
+      renderCountdownNote();
+    },
+    (err) => {
+      if (cdStored === state) {
+        cdStored = previous.stored;
+        cdLoadStatus = previous.status;
+      }
+      onCountdownWriteFailed(err);
+    }
+  );
+}
+
+// Always asks the store to clear (it is idempotent), so a record another
+// tab saved meanwhile is removed too.
+function forgetCountdown() {
+  if (cdStoreBlocked) return cdWriteChain;
+  const pair = countdownFieldsPair();
+  cdForgottenPair = pair ? cdPair(pair.targetDate, pair.targetTime) : "";
+  cdStored = null;
+  cdLoadStatus = "empty";
+  cdWriteFailed = false;
+  cdRestoredPair = "";
+  cdRestorePending = false;
+  cdClosedFinish = false;
+  renderCountdownNote();
+  return queueCountdownWrite(() => countdownClear()).then(
+    () => undefined,
+    (err) => {
+      if (cdStored === null) onCountdownWriteFailed(err);
+    }
+  );
+}
+
+// The one tick-time write: the first visible render of a finished target
+// records when it was seen, at most once per target.
+function markCountdownSeen(targetDate, targetTime) {
+  if (cdStoreBlocked || !cdStored || cdStored.finishedSeenAtMs !== null) return;
+  if (document.visibilityState !== "visible") return;
+  if (cdPair(cdStored.targetDate, cdStored.targetTime) !== cdPair(targetDate, targetTime)) return;
+  const state = { ...cdStored, finishedSeenAtMs: Date.now() };
+  cdStored = state;
+  // Not rolled back on failure: a retry on every tick would write per tick.
+  queueCountdownWrite(() => countdownSave({ ...state })).catch((err) => {
+    if (cdStored === state) onCountdownWriteFailed(err);
+  });
+}
+
+// Launch restore: before the first render, and only into an empty card.
+async function restoreSavedCountdown() {
+  let load = null;
+  try {
+    load = countdownLoad();
+  } catch {
+    load = null;
+  }
+  const status = load && typeof load.status === "string" ? load.status : "";
+  cdRestoredPair = "";
+  cdRestorePending = false;
+  cdClosedFinish = false;
+  cdStored = null;
+  cdWriteFailed = false;
+  if (status === "newer" || status === "unreadable") {
+    cdLoadStatus = status;
+    cdStoreBlocked = true;
+  } else if (!status) {
+    // No store on this backend: run without persistence, write nothing.
+    cdLoadStatus = "empty";
+    cdStoreBlocked = true;
+  } else {
+    cdStoreBlocked = false;
+    cdLoadStatus = status === "ok" || status === "corrupt" ? status : "empty";
+    if (status === "ok" && isCountdownState(load.state)) {
+      cdStored = { ...load.state };
+      if (readDate("cdTarget") === "") {
+        setField("cdTarget", cdStored.targetDate);
+        setField("cdTime", cdStored.targetTime);
+        cdRestoredPair = cdPair(cdStored.targetDate, cdStored.targetTime);
+        cdRestorePending = true;
+      }
+    } else if (status === "ok") {
+      cdLoadStatus = "empty";
+    }
+  }
+  renderCountdownNote();
+}
+
+// Mobile, another tab (plan A2): the record in storage changed. With focus
+// outside the countdown card this tab adopts it (a new target, a seen
+// finish, a clear, or a newer-version record) and re-renders without
+// writing; while the user is in the card the event is ignored and the last
+// writer wins.
+async function syncCountdownFromStorage() {
+  const card = $("card-countdown");
+  const active = document.activeElement;
+  if (card && active && card.contains(active)) return;
+  const load = countdownLoad();
+  const status = load && typeof load.status === "string" ? load.status : "";
+  if (status === "newer" || status === "unreadable") {
+    cdStored = null;
+    cdLoadStatus = status;
+    cdStoreBlocked = true;
+    renderCountdownNote();
+    return;
+  }
+  cdStoreBlocked = false;
+  cdWriteFailed = false;
+  const fields = countdownFieldsPair();
+  const shown = fields ? cdPair(fields.targetDate, fields.targetTime) : "";
+  if (status === "ok" && isCountdownState(load.state)) {
+    const next = { ...load.state };
+    const key = cdPair(next.targetDate, next.targetTime);
+    cdStored = next;
+    cdLoadStatus = "ok";
+    cdForgottenPair = "";
+    renderCountdownNote();
+    if (key === shown) return;
+    cdRestoredPair = "";
+    cdRestorePending = false;
+    cdClosedFinish = false;
+    setField("cdTarget", next.targetDate);
+    setField("cdTime", next.targetTime);
+    await updateCountdownLive();
+    return;
+  }
+  // Cleared (or unusable) elsewhere: forget the record here too. The target
+  // stays on screen, and the page-hide flush will not save it again.
+  cdStored = null;
+  cdLoadStatus = status === "corrupt" ? "corrupt" : "empty";
+  cdForgottenPair = shown;
+  if (cdRestoredPair !== "") {
+    cdRestoredPair = "";
+    cdRestorePending = false;
+    cdClosedFinish = false;
+    renderCountdownNote();
+    await updateCountdownLive();
+    return;
+  }
+  renderCountdownNote();
+}
+
+function setCountdownPhase(phase) {
+  const chip = $("cdPhase");
+  if (!chip) return;
+  const labels = {
+    counting: UI_TEXT.cdPhaseCounting,
+    restored: UI_TEXT.cdPhaseRestored,
+    finished: UI_TEXT.cdPhaseFinished,
+    finishedClosed: UI_TEXT.cdPhaseFinishedClosed
+  };
+  const text = Object.hasOwn(labels, phase) ? labels[phase] : "";
+  if (chip.textContent !== text) chip.textContent = text;
+  chip.classList.toggle("hidden", text === "");
+  chip.classList.toggle("is-finished", phase === "finished" || phase === "finishedClosed");
+}
+
 function clearCountdownTimer() {
   if (cdTimer) window.clearTimeout(cdTimer);
   cdTimer = 0;
@@ -7922,7 +9013,8 @@ async function updateCountdownLive({ fromTick = false } = {}) {
     lastValidCalc.countdown = null;
     cardIdle("countdown");
     setClockIdle();
-    setCountdownStatus("idle", "Pick a target date to start the countdown.");
+    setCountdownPhase("");
+    setCountdownStatus("idle", UI_TEXT.cdIdle);
     if (full) {
       await setCalendarView("cd", { anchor: null });
       if (ticket === seq.countdown) cdFullRenderPending = false;
@@ -7950,7 +9042,8 @@ async function updateCountdownLive({ fromTick = false } = {}) {
       const message = errorMessage(res);
       cardError("countdown", message);
       setClockIdle();
-      setCountdownStatus(`error|${message}`, `Countdown stopped: ${message}`);
+      setCountdownPhase("");
+      setCountdownStatus(`error|${message}`, UI_TEXT.cdStopped(message));
       if (full) {
         await setCalendarView("cd", { anchor: targetDate });
         if (ticket === seq.countdown) cdFullRenderPending = false;
@@ -7968,15 +9061,32 @@ async function updateCountdownLive({ fromTick = false } = {}) {
     setLive("countdown", `→ ${str(r.text)}`);
 
     const when = `${str(r.targetDate)} ${str(r.targetTime)} (${str(r.targetWeekday)})`;
-    if (r.status === "past") {
-      setCountdownStatus(
-        `${targetDate}|${r.targetTime}|past`,
-        `Target passed: counting the time since ${when}.`
-      );
-    } else if (r.status === "now") {
-      setCountdownStatus(`${targetDate}|${r.targetTime}|now`, `The target time is now: ${when}.`);
+    // No engine change: `past|now` is the finished signal. The first render
+    // after a launch restore decides "finished while closed" from
+    // finishedSeenAtMs (null = never seen finished on a visible screen).
+    const finished = r.status === "past" || r.status === "now";
+    // "restored" is the first render only; the next tick says counting down
+    // (one status rewrite, not a stale time left repeated every second).
+    const restoredNow = cdRestoredPair !== "" && cdRestoredPair === cdPair(targetDate, targetTime);
+    const restoreRender = restoredNow && cdRestorePending;
+    if (restoreRender) {
+      cdRestorePending = false;
+      cdClosedFinish = finished && Boolean(cdStored) && cdStored.finishedSeenAtMs === null;
+    }
+    let phase = "counting";
+    if (finished) phase = restoredNow && cdClosedFinish ? "finishedClosed" : "finished";
+    else if (restoreRender) phase = "restored";
+    if (finished) markCountdownSeen(targetDate, targetTime);
+    setCountdownPhase(phase);
+    const statusKey = `${targetDate}|${str(r.targetTime)}|${phase}`;
+    if (phase === "finishedClosed") {
+      setCountdownStatus(statusKey, UI_TEXT.cdFinishedClosed(when));
+    } else if (phase === "finished") {
+      setCountdownStatus(statusKey, UI_TEXT.cdFinished(when));
+    } else if (phase === "restored") {
+      setCountdownStatus(statusKey, UI_TEXT.cdRestored(str(r.text), when));
     } else {
-      setCountdownStatus(`${targetDate}|${r.targetTime}|future`, `Counting down to ${when}.`);
+      setCountdownStatus(statusKey, UI_TEXT.cdCounting(when));
     }
 
     lastValidCalc.countdown = {
@@ -8017,6 +9127,7 @@ async function updateCountdownLive({ fromTick = false } = {}) {
     lastValidCalc.countdown = null;
     cardError("countdown", "Calculation failed.");
     setClockIdle();
+    setCountdownPhase("");
   }
 }
 
@@ -8047,6 +9158,7 @@ async function applyCountdownQuick(kind) {
   }
   if (!target) return;
   setField("cdTarget", target);
+  persistCountdown();
   await updateCountdownLive();
 }
 
@@ -8140,6 +9252,7 @@ async function restoreHistoryEntry(entry) {
       setField("bizStart", val("startDate"));
       setField("bizEnd", val("endDate"));
       $("bizIncludeEnd").checked = val("includeEndDay") === "true";
+      resetBizPickTarget();
       break;
     case "age":
       await setLeapRule(val("leapDayRule"), false);
@@ -8152,6 +9265,7 @@ async function restoreHistoryEntry(entry) {
     case "countdown":
       setField("cdTarget", val("targetDate"));
       setField("cdTime", val("targetTime"));
+      persistCountdown();
       break;
     default:
       return;
@@ -8233,6 +9347,7 @@ function renderHistory(entries) {
     deleteBtn.textContent = "×";
     deleteBtn.title = "Delete history entry";
     deleteBtn.setAttribute("aria-label", "Delete history entry");
+    deleteBtn.disabled = historyReadOnly;
     deleteBtn.addEventListener("click", () => {
       deleteHistoryEntry(entry.id);
     });
@@ -8244,26 +9359,37 @@ function renderHistory(entries) {
 }
 
 async function deleteHistoryEntry(id) {
+  if (historyReadOnly) return;
   try {
     renderHistory(historyDelete(id));
-  } catch {
+  } catch (err) {
     // History delete errors should not interrupt calculator usage.
+    await onHistoryWriteError(err);
   }
 }
 
 async function recordHistoryFor(key) {
+  if (historyReadOnly) return;
   const entry = buildValidHistoryCandidate(lastValidCalc[key]);
   if (!entry) return;
   try {
     renderHistory(historyAdd(entry));
-  } catch {
+  } catch (err) {
     // History write errors should not interrupt calculator usage.
+    await onHistoryWriteError(err);
   }
 }
 
+// Mobile: the stored history is read first, so the read-only state shown
+// is the one this read produced (the desktop reads it from history_state).
 async function loadHistory() {
   try {
     loadHistoryState();
+  } catch {
+    // loadHistoryState never throws; a bad value makes history read-only.
+  }
+  await refreshHistoryState();
+  try {
     renderHistory(cloneJson(historyEntries));
   } catch {
     renderHistory([]);
@@ -8271,10 +9397,118 @@ async function loadHistory() {
 }
 
 // ---------------------------------------------------------------------------
+// History read-only mode (A3): a history file that could not be read safely
+// is never overwritten. Add, delete and clear are refused until Retry reads
+// it or the user explicitly starts a new history.
+// ---------------------------------------------------------------------------
+
+let historyReadOnly = false;
+let historyReadOnlyReason = null;
+
+const HISTORY_REASON_TEXT = {
+  read_error: UI_TEXT.historyReasonReadError,
+  too_large: UI_TEXT.historyReasonTooLarge,
+  corrupt: UI_TEXT.historyReasonCorrupt,
+  newer_schema: UI_TEXT.historyReasonNewer
+};
+
+function hideHistoryResetConfirm() {
+  $("historyResetConfirm")?.classList.add("hidden");
+  $("historyResetBtn")?.classList.remove("hidden");
+}
+
+function hideClearHistoryConfirm() {
+  $("clearHistoryConfirm")?.classList.add("hidden");
+  $("clearHistoryBtn")?.classList.remove("hidden");
+}
+
+function applyHistoryState(st, detailOverride = "") {
+  const wasReadOnly = historyReadOnly;
+  historyReadOnly = Boolean(st && typeof st === "object" && st.readOnly === true);
+  const reason = historyReadOnly && st && typeof st.reason === "string" ? st.reason : null;
+  historyReadOnlyReason = reason && Object.hasOwn(HISTORY_REASON_TEXT, reason) ? reason : null;
+  const banner = $("historyReadOnlyBanner");
+  const detail = $("historyReadOnlyDetail");
+  const text =
+    detailOverride || (historyReadOnlyReason ? HISTORY_REASON_TEXT[historyReadOnlyReason] : "");
+  // The banner is shown before its live message changes, so the change is
+  // announced; the buttons sit outside the live region.
+  banner?.classList.toggle("hidden", !historyReadOnly);
+  if (detail && detail.textContent !== text) detail.textContent = text;
+  const clearBtn = $("clearHistoryBtn");
+  if (clearBtn) clearBtn.disabled = historyReadOnly;
+  if (historyReadOnly) {
+    hideClearHistoryConfirm();
+  } else {
+    hideHistoryResetConfirm();
+    const active = document.activeElement;
+    if (wasReadOnly && banner && active && banner.contains(active)) clearBtn?.focus();
+  }
+  document.querySelectorAll(".history-delete-btn").forEach((btn) => {
+    btn.disabled = historyReadOnly;
+  });
+}
+
+// An older backend without history_state is treated as writable (v1.0.0).
+async function refreshHistoryState() {
+  try {
+    applyHistoryState(historyStatus());
+  } catch {
+    applyHistoryState(null);
+  }
+}
+
+async function onHistoryWriteError(err) {
+  if (String(err ?? "").includes("history_read_only")) {
+    await refreshHistoryState();
+    await loadHistoryEntriesOnly();
+  }
+}
+
+async function loadHistoryEntriesOnly() {
+  try {
+    renderHistory(cloneJson(historyEntries));
+  } catch {
+    renderHistory([]);
+  }
+}
+
+async function retryHistory() {
+  try {
+    applyHistoryState(historyRetry());
+  } catch {
+    await refreshHistoryState();
+  }
+  await loadHistoryEntriesOnly();
+}
+
+async function resetHistoryFile() {
+  let failed = false;
+  try {
+    historyReset();
+  } catch {
+    failed = true;
+  }
+  hideHistoryResetConfirm();
+  try {
+    const st = historyStatus();
+    applyHistoryState(st, failed && st && st.readOnly === true ? UI_TEXT.historyResetFailed : "");
+  } catch {
+    applyHistoryState(null);
+  }
+  await loadHistoryEntriesOnly();
+  if (!historyReadOnly) $("clearHistoryBtn")?.focus();
+  else $("historyResetBtn")?.focus();
+}
+
+// ---------------------------------------------------------------------------
 // Clear
 // ---------------------------------------------------------------------------
 
-function resetCard(key) {
+// `forget` is the countdown card's own Clear; clear all passes false, so a
+// mis-tap in the header row only empties fields and never deletes the saved
+// countdown (Forget and the card's Clear stay the explicit actions).
+function resetCard(key, { forget = true } = {}) {
   switch (key) {
     case "between":
       clearFields(["betweenStart", "betweenEnd"]);
@@ -8286,6 +9520,7 @@ function resetCard(key) {
     case "business":
       clearFields(["bizStart", "bizEnd"]);
       $("bizIncludeEnd").checked = false;
+      resetBizPickTarget();
       break;
     case "age":
       clearFields(["ageBirth", "ageAsOf"]);
@@ -8295,6 +9530,9 @@ function resetCard(key) {
       break;
     case "countdown":
       stopCountdown();
+      // The card's Clear is an explicit action: it also forgets the saved
+      // countdown.
+      if (forget) forgetCountdown();
       clearFields(["cdTarget", "cdTime"]);
       break;
     default:
@@ -8305,7 +9543,7 @@ function resetCard(key) {
 }
 
 function clearAllCalculators() {
-  const done = Promise.all(CARD_KEYS.map((key) => resetCard(key)));
+  const done = Promise.all(CARD_KEYS.map((key) => resetCard(key, { forget: false })));
   $("betweenStart")?.focus();
   return done;
 }
@@ -9354,7 +10592,8 @@ function bindControls() {
   });
   window.matchMedia("(display-mode: standalone)").addEventListener?.("change", updateInstallUi);
 
-  // Cross-tab sync: another tab of this app changed history or settings.
+  // Cross-tab sync: another tab of this app changed history, settings or
+  // the saved countdown.
   window.addEventListener("storage", (event) => {
     if (event.storageArea && event.storageArea !== storageArea()) return;
     if (event.key === HISTORY_STORAGE_KEY || event.key === null) {
@@ -9362,6 +10601,9 @@ function bindControls() {
     }
     if (event.key === SETTINGS_STORAGE_KEY || event.key === null) {
       syncSettingsFromStorage();
+    }
+    if (event.key === COUNTDOWN_STORAGE_KEY || event.key === null) {
+      syncCountdownFromStorage();
     }
   });
 
@@ -9419,6 +10661,7 @@ function bindControls() {
   const clearHistoryBtn = $("clearHistoryBtn");
   const clearConfirmGroup = $("clearHistoryConfirm");
   clearHistoryBtn.addEventListener("click", () => {
+    if (historyReadOnly) return;
     clearHistoryBtn.classList.add("hidden");
     clearConfirmGroup.classList.remove("hidden");
     $("cancelClearHistoryBtn")?.focus();
@@ -9429,14 +10672,31 @@ function bindControls() {
     clearHistoryBtn.focus();
   });
   $("confirmClearHistoryBtn").addEventListener("click", async () => {
-    try {
-      renderHistory(historyClear());
-    } catch {
-      renderHistory([]);
+    if (!historyReadOnly) {
+      try {
+        renderHistory(historyClear());
+      } catch (err) {
+        if (String(err ?? "").includes("history_read_only")) await onHistoryWriteError(err);
+        else renderHistory([]);
+      }
     }
     clearConfirmGroup.classList.add("hidden");
     clearHistoryBtn.classList.remove("hidden");
   });
+
+  // History read-only banner: Retry, and a two-step "start a new history".
+  $("historyRetryBtn")?.addEventListener("click", () => retryHistory());
+  $("historyResetBtn")?.addEventListener("click", () => {
+    if (!historyReadOnly) return;
+    $("historyResetBtn").classList.add("hidden");
+    $("historyResetConfirm")?.classList.remove("hidden");
+    $("cancelHistoryResetBtn")?.focus();
+  });
+  $("cancelHistoryResetBtn")?.addEventListener("click", () => {
+    hideHistoryResetConfirm();
+    $("historyResetBtn")?.focus();
+  });
+  $("confirmHistoryResetBtn")?.addEventListener("click", () => resetHistoryFile());
 }
 
 function bindSettingsControls() {
@@ -9537,7 +10797,12 @@ function bindCards() {
 
   live(["infoDate"], updateInfoLive);
 
+  // Commit listeners first, so a render that follows sees the saved record.
+  ["cdTarget", "cdTime"].forEach((id) => {
+    $(id)?.addEventListener("change", () => persistCountdown());
+  });
   live(["cdTarget", "cdTime"], () => updateCountdownLive());
+  $("cdForgetBtn")?.addEventListener("click", () => forgetCountdown());
   document.querySelectorAll(".quick-pill[data-quick]").forEach((btn) => {
     btn.addEventListener("click", () => applyCountdownQuick(btn.dataset.quick));
   });
@@ -9549,16 +10814,13 @@ function bindCards() {
       if (!target) return;
       target.value = todayIso();
       syncDateEmpty(target);
+      if (target.id === "cdTarget") persistCountdown();
       target.dispatchEvent(new Event("input", { bubbles: true }));
     });
   });
 
-  // Mini calendar month navigation.
-  Object.keys(calViews).forEach((key) => {
-    const p = calViews[key].prefix;
-    $(`${p}PrevBtn`)?.addEventListener("click", () => shiftCalendar(key, -1));
-    $(`${p}NextBtn`)?.addEventListener("click", () => shiftCalendar(key, 1));
-  });
+  // Mini calendars: month navigation, "today" view, click and keyboard picks.
+  bindMiniCalendars();
 
   attachAmountPasteSanitizers();
 }
@@ -9625,6 +10887,10 @@ async function initialize() {
 
   await loadSettingsAndMaybeCheckUpdates();
   await refreshCalendarInfo();
+  // A2: the saved countdown fills the empty card before the first render, so
+  // the exact time left shows at once.
+  await restoreSavedCountdown();
+  resetBizPickTarget();
 
   await Promise.all([
     updateBetweenLive(),
@@ -9639,13 +10905,24 @@ async function initialize() {
   ]);
 
   window.setInterval(checkDayRollover, ROLLOVER_CHECK_MS);
+  const resumeVisible = () => {
+    checkDayRollover();
+    if (cdActive) updateCountdownLive({ fromTick: true });
+  };
   document.addEventListener("visibilitychange", () => {
     if (document.visibilityState === "hidden") {
       clearCountdownTimer();
+      persistCountdown({ explicit: false });
       return;
     }
-    checkDayRollover();
-    if (cdActive) updateCountdownLive({ fromTick: true });
+    resumeVisible();
+  });
+  window.addEventListener("pagehide", () => {
+    persistCountdown({ explicit: false });
+  });
+  // Back/forward cache: the page returns without a visibilitychange.
+  window.addEventListener("pageshow", (event) => {
+    if (event.persisted) resumeVisible();
   });
 
   // Avoid forcing the virtual keyboard open on touch devices.
