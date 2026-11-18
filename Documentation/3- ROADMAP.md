@@ -27,7 +27,7 @@
 
 | # | Milestone | Done when | Status |
 |---|---|---|---|
-| A8 | Collapsible and reorderable cards | collapse, drag/keyboard reorder and reset work on desktop and phone; the layout is saved in its own store; checks green; **owner-approved** merge → v1.2.0 Release | in progress |
+| A8 | Collapsible and reorderable cards | collapse, drag/keyboard reorder and reset work on desktop and phone; the layout is saved in its own store; checks green; **owner-approved** merge → v1.2.0 Release | done 2026-11-18 (PR #5 → `c40fd4d`; Release v1.2.0 verified, E-17) |
 
 After v1.1.0: Part B, Portable Calculator Tool v1.0.0, in a new repo (M0–M11 in the plan).
 

@@ -18,7 +18,9 @@
   <a href="Documentation/specs/0-%20FROZEN_DECISIONS.md"><strong>Design decisions</strong></a>
 </p>
 
-> **Status: v1.1.0 released on 2026-11-18** (clickable calendars, a countdown that survives restarts, safer history). v1.0.0 was released on 2026-11-17.
+> **Status: v1.2.0 released on 2026-11-18** (collapsible and reorderable cards with a remembered layout). Earlier: v1.1.0 (clickable calendars, a countdown that survives restarts, safer history) and v1.0.0, both 2026-11-17/18.
+>
+> **What's new in v1.2.0:** collapse any card with [ − ]; reorder cards by dragging the ⠿ handle, with the arrow keys, or by tapping the handle for a Move up / Move down menu (works with VoiceOver and TalkBack); the layout is remembered, and Settings → Layout resets it. Full notes: [release-notes-v1.2.0.md](.github/release-notes-v1.2.0.md).
 >
 > **What's new in v1.1.0:** clickable mini calendars on Business Days, Date Info and Countdown (with keyboard support); the countdown is remembered across restarts and shows *restored*, *finished* or *finished while closed*; and an unreadable history file is never overwritten (history turns read-only, with Retry and a backed-up fresh start). The date engine is unchanged at 1.0.0. Full notes: [release-notes-v1.1.0.md](.github/release-notes-v1.1.0.md).
 >
