@@ -55,7 +55,7 @@ A fast, private date calculator that works entirely on your device:
 - no login, accounts, telemetry, cookies or tracking
 - no network calls during calculations; the PWA works fully offline once opened
 - the only optional network use is a GitHub Releases update check, which can be turned off in Settings
-- history (up to 500 entries), settings and the saved countdown stay local:
+- history (up to 500 entries), settings, the saved countdown and the card layout stay local:
   - desktop: `%APPDATA%\com.datecalculator.tool\`
   - mobile and web: `localStorage`
 
@@ -82,12 +82,22 @@ Calendar and holidays:
   - Islamic holidays estimated from the tabular Hijri calendar and clearly marked "estimated", with a ±2-day adjustment and per-year overrides;
   - choosing Egypt switches the weekend to Fri/Sat.
 - **Custom holidays:** one-off or yearly. Any preset holiday can be excluded.
-- **Mini calendars** show weekends, holidays and ranges at a glance. On Business Days, Date Info and Countdown you can **click a day** to set the date (Business Days has a start/end switch), or use the keyboard.
+- **Mini calendars** show weekends, holidays and ranges at a glance. On Business Days, Date Info and Countdown you can **click a day** to set the date:
+  - Business Days has a Start/End switch, and Shift-click sets the end. After you type a start date, the next click sets the end.
+  - Arrow keys move between days, and a Today button jumps back to this month. Day cells are 44 px touch targets.
+
+Card layout:
+
+- **Collapse** any card with its [ − ] / [ + ] button. A collapsed card keeps its inputs and live results.
+- **Reorder** cards by dragging the ⠿ handle (mouse, pen or finger), with ArrowUp / ArrowDown on the handle, or by tapping the handle for a Move up / Move down / Done menu that works with VoiceOver and TalkBack.
+- The quick-jump bar follows the card order.
+- The layout is remembered on this device. **Settings → Layout → "Reset card order & expand all"** brings back the default.
 
 Shared polish:
 
 - live results while typing, with a "live formula" panel showing each step
 - copy buttons and a history list with filter, restore and delete; an unreadable history file is never overwritten (history turns read-only, with Retry and a backed-up fresh start)
+- the countdown can be cleared with **Forget**
 - quick-jump navigation, Enter-to-calculate, and dark Settings and About screens
 - Windows NSIS and MSI installers, a portable `.exe`, and an installable offline PWA
 
@@ -121,11 +131,13 @@ The same defence-in-depth approach as its sibling project:
   - strict CSP with `connect-src 'none'`;
   - a Tauri capability with no permissions (`permissions: []`);
   - update checks run in Rust, not in the web view;
-  - hardened JSON storage: size caps, symlink rejection, atomic writes and strict schemas.
+  - hardened JSON storage for history, settings, the countdown and the layout: size caps, symlink rejection, atomic writes and strict schemas;
+  - a corrupt file is backed up before anything replaces it, and a history file that cannot be read makes history read-only instead of being overwritten.
 - **Mobile:**
   - CSP pinned to SHA-256 hashes of the inline style and script;
   - a scoped service worker;
-  - validated `localStorage`, with a one-time backup if data is ever corrupt.
+  - validated `localStorage`, with a backup if data is ever corrupt;
+  - the engine slice is pinned by its SHA-256, so an engine change cannot slip in unnoticed.
 - **Code:**
   - no `innerHTML`, `eval` or `new Function` anywhere;
   - the date engine is pure Rust (`#![forbid(unsafe_code)]`, no clock or time-zone access, no panics on any input).
@@ -141,15 +153,17 @@ Controls and their verification status are tracked in [`Documentation/pbs/SECURI
 Desktop UI (ui/index.html, styles.css, main.js)
   -> Tauri invoke() commands (src-tauri/src/commands.rs)
   -> Pure Rust date engine (crates/date-core)
-  -> Hardened local JSON history/settings, bounded clipboard IPC
+  -> Hardened local JSON stores (history, settings, countdown, layout), bounded clipboard IPC
 
 Mobile & Web Edition (mobile/index.html + mobile/sw.js)
   -> Single-file HTML/CSS/JS with a JavaScript port of date-core
   -> Byte-for-byte parity with the Rust engine on every golden test case
-  -> On-device localStorage history + offline service worker cache
+  -> On-device localStorage (history, settings, countdown, layout) + offline service worker cache
 ```
 
 There is no frontend framework and no bundler; the UI is plain HTML, CSS and JavaScript. All date and holiday logic lives in `date-core`. The mobile edition carries a line-by-line JavaScript copy of it, and CI proves both give identical output.
+
+The app and the engine have separate versions. The app is at 1.2.0; the engine (`date-core`) is still 1.0.0, because its behaviour has not changed since the first release.
 
 ---
 
@@ -205,7 +219,7 @@ cargo test --workspace --locked
 cargo run -p date-core --example gen_golden --locked -- --check
 ```
 
-The 134 Rust tests (104 engine, 30 desktop backend) check:
+The 140 Rust tests (104 engine, 36 desktop backend) check:
 - every day from 0001-01-01 to 9999-12-31 (3,652,059 days) against the `chrono` library;
 - 195 hand-verified vectors;
 - published US/UK/Egypt holiday tables;
@@ -213,21 +227,21 @@ The 134 Rust tests (104 engine, 30 desktop backend) check:
 - that every result's copy text fits the 1024-byte history limit;
 - a 13,965-case golden fixture shared with the mobile engine;
 - adversarial and fuzz safety cases;
-- the desktop's history, settings and countdown storage (including read-only history on read errors and backups before any reset), validation and update-check parsing.
+- the desktop's history, settings, countdown and layout storage (including read-only history on read errors and backups before any reset), validation and update-check parsing.
 
-Mobile parity gate. It checks CSP hashes, line endings, banned DOM sinks and that the version matches everywhere, then replays all golden cases through the mobile engine under three time zones:
+Mobile parity gate. It checks CSP hashes, line endings and banned DOM sinks, that the app version and the engine version each match everywhere, and that the engine slice is unchanged (pinned by SHA-256). Then it replays all golden cases through the mobile engine under three time zones:
 
 ```powershell
 node scripts/check-mobile.mjs
 ```
 
-Cross-surface safety evaluation (87 criteria, including 29 planted bugs it must catch). It compares the Rust engine, the mobile engine and an independent oracle, drives both UIs in a simulated DOM, and writes a System Card:
+Cross-surface safety evaluation (107 criteria, 36,134 assertions). It compares the Rust engine, the mobile engine and an independent oracle, drives both UIs in a simulated DOM, and writes a System Card. Planted bugs (mutants) prove that its checks really fail when something breaks:
 
 ```powershell
 node scripts/safety-eval.mjs --json target/safety-eval-system-card.json
 ```
 
-Desktop smoke test. It launches the real app hidden, keeps history, settings and the countdown in memory only, round-trips a countdown save, and writes a test string to the clipboard:
+Desktop smoke test. It launches the real app hidden and keeps history, settings, the countdown and the layout in memory only. It checks the renderer and IPC, round-trips a countdown save and a layout save, and writes a test string to the clipboard:
 
 ```powershell
 cargo run -p date-calculator-tool --locked -- --smoke-test
