@@ -18,11 +18,13 @@
   <a href="Documentation/specs/0-%20FROZEN_DECISIONS.md"><strong>Design decisions</strong></a>
 </p>
 
-> **Status: v1.1.0 is ready on `dev` and ships when it is merged to `main`. v1.0.0 was released on 2026-11-17.**
+> **Status: v1.1.0 released on 2026-11-18** (clickable calendars, a countdown that survives restarts, safer history). v1.0.0 was released on 2026-11-17.
 >
 > **What's new in v1.1.0:** clickable mini calendars on Business Days, Date Info and Countdown (with keyboard support); the countdown is remembered across restarts and shows *restored*, *finished* or *finished while closed*; and an unreadable history file is never overwritten (history turns read-only, with Retry and a backed-up fresh start). The date engine is unchanged at 1.0.0. Full notes: [release-notes-v1.1.0.md](.github/release-notes-v1.1.0.md).
 >
 > The **Releases** link has the Windows installers, the portable `.exe`, the standalone mobile HTML and `SHA256SUMS.txt`. The **Mobile & Web App** link is live on GitHub Pages. Both are built by CI from `main`.
+>
+> **What comes next:** this app and [Percentage Calculator Tool](https://github.com/CipherVaults/Percentage-Calculator-Tool) are being merged into one app, **[Portable Calculator Tool](https://github.com/CipherVaults/Portable-Calculator-Tool)** (in development). It adds standard, scientific, programmer and graphing calculators, unit converters, a pop-up Mini Calculator, three themes and 12 languages. Date Calculator Tool keeps working in the meantime.
 
 Date Calculator Tool is a sibling of [Percentage Calculator Tool](https://github.com/CipherVaults/Percentage-Calculator-Tool). It shares that project's architecture, security hardening and dark-terminal design, applied to date calculations. Its functional baseline is the familiar online date calculators, with more modes and real holiday rules.
 
@@ -51,7 +53,7 @@ A fast, private date calculator that works entirely on your device:
 - no login, accounts, telemetry, cookies or tracking
 - no network calls during calculations; the PWA works fully offline once opened
 - the only optional network use is a GitHub Releases update check, which can be turned off in Settings
-- history (up to 500 entries) and settings stay local:
+- history (up to 500 entries), settings and the saved countdown stay local:
   - desktop: `%APPDATA%\com.datecalculator.tool\`
   - mobile and web: `localStorage`
 
@@ -66,7 +68,7 @@ Six calculator cards, available on both desktop and mobile:
 - **Business Days.** Working days between two dates, skipping weekends and holidays, with the holidays it hit listed.
 - **Age.** Exact age in years, months and days, totals, and the next birthday countdown. Feb 29 birthdays can count on Feb 28 or Mar 1.
 - **Date Info.** Weekday, ISO week, day of year, quarter, leap year, and days left in the month and year.
-- **Countdown.** A live countdown to a date and optional time, correct across daylight-saving changes.
+- **Countdown.** A live countdown to a date and optional time, correct across daylight-saving changes. It is remembered on this device: reopen the app and it shows the exact time left, or that it finished (including "finished while the app was closed").
 
 Calendar and holidays:
 
@@ -78,12 +80,12 @@ Calendar and holidays:
   - Islamic holidays estimated from the tabular Hijri calendar and clearly marked "estimated", with a ±2-day adjustment and per-year overrides;
   - choosing Egypt switches the weekend to Fri/Sat.
 - **Custom holidays:** one-off or yearly. Any preset holiday can be excluded.
-- **Mini calendars** show weekends, holidays and ranges at a glance.
+- **Mini calendars** show weekends, holidays and ranges at a glance. On Business Days, Date Info and Countdown you can **click a day** to set the date (Business Days has a start/end switch), or use the keyboard.
 
 Shared polish:
 
 - live results while typing, with a "live formula" panel showing each step
-- copy buttons and a history list with filter, restore and delete
+- copy buttons and a history list with filter, restore and delete; an unreadable history file is never overwritten (history turns read-only, with Retry and a backed-up fresh start)
 - quick-jump navigation, Enter-to-calculate, and dark Settings and About screens
 - Windows NSIS and MSI installers, a portable `.exe`, and an installable offline PWA
 
@@ -201,7 +203,7 @@ cargo test --workspace --locked
 cargo run -p date-core --example gen_golden --locked -- --check
 ```
 
-The 120 Rust tests (104 engine, 16 desktop backend) check:
+The 134 Rust tests (104 engine, 30 desktop backend) check:
 - every day from 0001-01-01 to 9999-12-31 (3,652,059 days) against the `chrono` library;
 - 195 hand-verified vectors;
 - published US/UK/Egypt holiday tables;
@@ -209,7 +211,7 @@ The 120 Rust tests (104 engine, 16 desktop backend) check:
 - that every result's copy text fits the 1024-byte history limit;
 - a 13,965-case golden fixture shared with the mobile engine;
 - adversarial and fuzz safety cases;
-- the desktop's history and settings storage, validation and update-check parsing.
+- the desktop's history, settings and countdown storage (including read-only history on read errors and backups before any reset), validation and update-check parsing.
 
 Mobile parity gate. It checks CSP hashes, line endings, banned DOM sinks and that the version matches everywhere, then replays all golden cases through the mobile engine under three time zones:
 
@@ -217,13 +219,13 @@ Mobile parity gate. It checks CSP hashes, line endings, banned DOM sinks and tha
 node scripts/check-mobile.mjs
 ```
 
-Cross-surface safety evaluation. It compares the Rust engine, the mobile engine and an independent oracle, drives both UIs in a simulated DOM, and writes a System Card:
+Cross-surface safety evaluation (87 criteria, including 29 planted bugs it must catch). It compares the Rust engine, the mobile engine and an independent oracle, drives both UIs in a simulated DOM, and writes a System Card:
 
 ```powershell
 node scripts/safety-eval.mjs --json target/safety-eval-system-card.json
 ```
 
-Desktop smoke test. It launches the real app hidden, keeps history and settings in memory only, and writes a test string to the clipboard:
+Desktop smoke test. It launches the real app hidden, keeps history, settings and the countdown in memory only, round-trips a countdown save, and writes a test string to the clipboard:
 
 ```powershell
 cargo run -p date-calculator-tool --locked -- --smoke-test

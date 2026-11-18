@@ -34,6 +34,6 @@
 
 ## 🧭 Operational orientation
 
-- Current phase: **v1.1.0 build (Part A of the Portable Calculator Plan)** on `dev`. Owner checks still open from v1.0.0: real-phone PWA install and acceptance. Live operational source: the working tree and `git log` on `dev`; `main` holds the released code.
+- Current phase: **v1.1.0 released 2026-11-18 (E-16); Part B continues in CipherVaults/Portable-Calculator-Tool.** Owner checks still open from v1.0.0: real-phone PWA install and acceptance. Live operational source: the working tree and `git log` on `dev`; `main` holds the released code.
 - Source/owner map: [SOURCE_OWNERSHIP_MAP.md](SOURCE_OWNERSHIP_MAP.md).
 - Unaccepted work pointer: [CONTINUATION_STATE.md](CONTINUATION_STATE.md).
