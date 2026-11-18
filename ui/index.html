@@ -35,311 +35,351 @@
   </div>
 
   <nav class="quick-nav" aria-label="Jump to calculator">
-    <a class="quick-link" href="#card-between">between</a>
-    <a class="quick-link" href="#card-add">add / subtract</a>
-    <a class="quick-link" href="#card-business">business days</a>
-    <a class="quick-link" href="#card-age">age</a>
-    <a class="quick-link" href="#card-info">date info</a>
-    <a class="quick-link" href="#card-countdown">countdown</a>
+    <a class="quick-link" href="#card-between" data-calc="between">between</a>
+    <a class="quick-link" href="#card-add" data-calc="add">add / subtract</a>
+    <a class="quick-link" href="#card-business" data-calc="business">business days</a>
+    <a class="quick-link" href="#card-age" data-calc="age">age</a>
+    <a class="quick-link" href="#card-info" data-calc="info">date info</a>
+    <a class="quick-link" href="#card-countdown" data-calc="countdown">countdown</a>
     <a class="quick-link" href="#historySection">history</a>
   </nav>
 
+  <p class="sr-only" id="cardMoveHint">Drag to move this card, or tap or press it for Move up and Move down buttons. Arrow Up and Arrow Down also move it.</p>
+  <div class="sr-only" id="layoutLiveStatus" role="status" aria-live="polite" aria-atomic="true"></div>
+
+  <div class="cards-container" id="cardsContainer">
   <!-- 1. Days Between Two Dates -->
-  <div class="calc-section" id="card-between">
-    <div class="calc-grid">
-      <div class="left-panel">
+  <div class="calc-section" id="card-between" data-calc="between">
+    <div class="calc-card-header">
+      <button class="drag-handle" type="button" aria-label="Move Days Between Two Dates" aria-describedby="cardMoveHint" title="Drag to reorder">⠿</button>
+      <div class="calc-card-heading">
         <div class="section-title" id="betweenTitle">Days Between Two Dates</div>
         <div class="section-subtitle">Counts the years, months and days between two dates, with totals in days, weeks, hours, minutes and seconds.</div>
-
-        <div class="input-row">
-          <label for="betweenStart">Start date</label>
-          <div class="date-row">
-            <input class="date-input date-empty" type="date" id="betweenStart" min="0001-01-01" max="9999-12-31" placeholder="YYYY-MM-DD">
-            <button class="today-btn" id="betweenStartTodayBtn" type="button" data-target="betweenStart" aria-label="Set start date to today">today</button>
-          </div>
-        </div>
-        <div class="swap-row">
-          <button class="swap-btn" id="swapBetweenBtn" type="button" title="Swap start and end dates">⇅ swap dates</button>
-        </div>
-        <div class="input-row">
-          <label for="betweenEnd">End date</label>
-          <div class="date-row">
-            <input class="date-input date-empty" type="date" id="betweenEnd" min="0001-01-01" max="9999-12-31" placeholder="YYYY-MM-DD">
-            <button class="today-btn" id="betweenEndTodayBtn" type="button" data-target="betweenEnd" aria-label="Set end date to today">today</button>
-          </div>
-        </div>
-        <label class="check-row" for="betweenIncludeEnd">
-          <input class="settings-checkbox" type="checkbox" id="betweenIncludeEnd">
-          <span>include the later date (+1 day)</span>
-        </label>
-
-        <div class="button-group">
-          <button class="calc-btn" id="calcBetweenBtn" type="button">calculate</button>
-          <button class="reset-btn" id="resetBetweenBtn" type="button">clear</button>
-          <button class="copy-btn" id="copyBetweenBtn" type="button">copy</button>
-        </div>
-
-        <div class="result" id="betweenResult" role="status" aria-live="polite">—</div>
       </div>
+      <button class="collapse-btn" type="button" aria-expanded="true" aria-controls="card-between-body" aria-label="Collapse Days Between Two Dates">[ − ]</button>
+    </div>
+    <div class="calc-card-body" id="card-between-body">
+      <div class="calc-grid">
+        <div class="left-panel">
+          <div class="input-row">
+            <label for="betweenStart">Start date</label>
+            <div class="date-row">
+              <input class="date-input date-empty" type="date" id="betweenStart" min="0001-01-01" max="9999-12-31" placeholder="YYYY-MM-DD">
+              <button class="today-btn" id="betweenStartTodayBtn" type="button" data-target="betweenStart" aria-label="Set start date to today">today</button>
+            </div>
+          </div>
+          <div class="swap-row">
+            <button class="swap-btn" id="swapBetweenBtn" type="button" title="Swap start and end dates">⇅ swap dates</button>
+          </div>
+          <div class="input-row">
+            <label for="betweenEnd">End date</label>
+            <div class="date-row">
+              <input class="date-input date-empty" type="date" id="betweenEnd" min="0001-01-01" max="9999-12-31" placeholder="YYYY-MM-DD">
+              <button class="today-btn" id="betweenEndTodayBtn" type="button" data-target="betweenEnd" aria-label="Set end date to today">today</button>
+            </div>
+          </div>
+          <label class="check-row" for="betweenIncludeEnd">
+            <input class="settings-checkbox" type="checkbox" id="betweenIncludeEnd">
+            <span>include the later date (+1 day)</span>
+          </label>
 
-      <div class="right-panel">
-        <div class="formula-title">live formula</div>
-        <ul class="trace live-formula" id="betweenTrace" aria-label="Days between: calculation steps">
-          <li class="trace-hint">start + years → + months → + days = end</li>
-        </ul>
-        <div class="live-result" id="betweenLiveResult">→ —</div>
+          <div class="button-group">
+            <button class="calc-btn" id="calcBetweenBtn" type="button">calculate</button>
+            <button class="reset-btn" id="resetBetweenBtn" type="button">clear</button>
+            <button class="copy-btn" id="copyBetweenBtn" type="button">copy</button>
+          </div>
+
+          <div class="result" id="betweenResult" role="status" aria-live="polite">—</div>
+        </div>
+
+        <div class="right-panel">
+          <div class="formula-title">live formula</div>
+          <ul class="trace live-formula" id="betweenTrace" aria-label="Days between: calculation steps">
+            <li class="trace-hint">start + years → + months → + days = end</li>
+          </ul>
+          <div class="live-result" id="betweenLiveResult">→ —</div>
+        </div>
       </div>
     </div>
   </div>
 
   <!-- 2. Add / Subtract -->
-  <div class="calc-section" id="card-add">
-    <div class="calc-grid">
-      <div class="left-panel">
-        <div class="section-title-row">
-          <div class="section-title" id="addTitle">Add / Subtract</div>
-          <div class="mode-toggle" role="group" aria-label="Add or subtract">
-            <button class="mode-btn active" id="addModeAddBtn" data-mode="add" type="button" aria-pressed="true">+ add</button>
-            <button class="mode-btn" id="addModeSubtractBtn" data-mode="subtract" type="button" aria-pressed="false">− subtract</button>
-          </div>
-        </div>
+  <div class="calc-section" id="card-add" data-calc="add">
+    <div class="calc-card-header">
+      <button class="drag-handle" type="button" aria-label="Move Add / Subtract" aria-describedby="cardMoveHint" title="Drag to reorder">⠿</button>
+      <div class="calc-card-heading">
+        <div class="section-title" id="addTitle">Add / Subtract</div>
         <div class="section-subtitle" id="addSubtitle">Adds years, months, weeks and days to a date, or subtracts them. Month ends clamp (Jan 31 + 1 month = Feb 28/29).</div>
-
-        <div class="input-row">
-          <label for="addStart">Start date</label>
-          <div class="date-row">
-            <input class="date-input date-empty" type="date" id="addStart" min="0001-01-01" max="9999-12-31" placeholder="YYYY-MM-DD">
-            <button class="today-btn" id="addStartTodayBtn" type="button" data-target="addStart" aria-label="Set start date to today">today</button>
-          </div>
-        </div>
-
-        <div class="amount-grid">
-          <div class="input-row">
-            <label for="addYears" id="addYearsLabel">Years</label>
-            <input type="text" inputmode="numeric" id="addYears" placeholder="0" autocomplete="off" spellcheck="false" maxlength="16">
-          </div>
-          <div class="input-row">
-            <label for="addMonths" id="addMonthsLabel">Months</label>
-            <input type="text" inputmode="numeric" id="addMonths" placeholder="0" autocomplete="off" spellcheck="false" maxlength="16">
-          </div>
-          <div class="input-row">
-            <label for="addWeeks" id="addWeeksLabel">Weeks</label>
-            <input type="text" inputmode="numeric" id="addWeeks" placeholder="0" autocomplete="off" spellcheck="false" maxlength="16">
-          </div>
-          <div class="input-row">
-            <label for="addDays" id="addDaysLabel">Days</label>
-            <input type="text" inputmode="numeric" id="addDays" placeholder="0" autocomplete="off" spellcheck="false" maxlength="16">
-          </div>
-        </div>
-
-        <label class="check-row" for="addBusiness">
-          <input class="settings-checkbox" type="checkbox" id="addBusiness" aria-describedby="addBusinessNote">
-          <span>count days as business days</span>
-        </label>
-        <div class="business-note hidden" id="addBusinessNote">Years and months step on the calendar first; then weeks count as business weeks (weeks × working days per week), then business days.</div>
-        <div class="calendar-summary hidden" id="addCalendarSummary">
-          <span class="calendar-summary-text" id="addCalendarSummaryText">Sat/Sun · no holidays</span>
-          <button class="link-btn" id="addCalendarEditBtn" type="button">edit in settings</button>
-        </div>
-
-        <div class="button-group">
-          <button class="calc-btn" id="calcAddBtn" type="button">calculate</button>
-          <button class="reset-btn" id="resetAddBtn" type="button">clear</button>
-          <button class="copy-btn" id="copyAddBtn" type="button">copy</button>
-        </div>
-
-        <div class="result" id="addResult" role="status" aria-live="polite">—</div>
       </div>
+      <button class="collapse-btn" type="button" aria-expanded="true" aria-controls="card-add-body" aria-label="Collapse Add / Subtract">[ − ]</button>
+    </div>
+    <div class="calc-card-body" id="card-add-body">
+      <div class="calc-grid">
+        <div class="left-panel">
+          <div class="mode-row">
+            <div class="mode-toggle" role="group" aria-label="Add or subtract">
+              <button class="mode-btn active" id="addModeAddBtn" data-mode="add" type="button" aria-pressed="true">+ add</button>
+              <button class="mode-btn" id="addModeSubtractBtn" data-mode="subtract" type="button" aria-pressed="false">− subtract</button>
+            </div>
+          </div>
 
-      <div class="right-panel">
-        <div class="formula-title">live formula</div>
-        <ul class="trace live-formula" id="addTrace" aria-label="Add or subtract: calculation steps">
-          <li class="trace-hint">date ± years, months (clamped to month end) → ± weeks, days = result</li>
-        </ul>
-        <div class="live-result" id="addLiveResult">→ —</div>
+          <div class="input-row">
+            <label for="addStart">Start date</label>
+            <div class="date-row">
+              <input class="date-input date-empty" type="date" id="addStart" min="0001-01-01" max="9999-12-31" placeholder="YYYY-MM-DD">
+              <button class="today-btn" id="addStartTodayBtn" type="button" data-target="addStart" aria-label="Set start date to today">today</button>
+            </div>
+          </div>
+
+          <div class="amount-grid">
+            <div class="input-row">
+              <label for="addYears" id="addYearsLabel">Years</label>
+              <input type="text" inputmode="numeric" id="addYears" placeholder="0" autocomplete="off" spellcheck="false" maxlength="16">
+            </div>
+            <div class="input-row">
+              <label for="addMonths" id="addMonthsLabel">Months</label>
+              <input type="text" inputmode="numeric" id="addMonths" placeholder="0" autocomplete="off" spellcheck="false" maxlength="16">
+            </div>
+            <div class="input-row">
+              <label for="addWeeks" id="addWeeksLabel">Weeks</label>
+              <input type="text" inputmode="numeric" id="addWeeks" placeholder="0" autocomplete="off" spellcheck="false" maxlength="16">
+            </div>
+            <div class="input-row">
+              <label for="addDays" id="addDaysLabel">Days</label>
+              <input type="text" inputmode="numeric" id="addDays" placeholder="0" autocomplete="off" spellcheck="false" maxlength="16">
+            </div>
+          </div>
+
+          <label class="check-row" for="addBusiness">
+            <input class="settings-checkbox" type="checkbox" id="addBusiness" aria-describedby="addBusinessNote">
+            <span>count days as business days</span>
+          </label>
+          <div class="business-note hidden" id="addBusinessNote">Years and months step on the calendar first; then weeks count as business weeks (weeks × working days per week), then business days.</div>
+          <div class="calendar-summary hidden" id="addCalendarSummary">
+            <span class="calendar-summary-text" id="addCalendarSummaryText">Sat/Sun · no holidays</span>
+            <button class="link-btn" id="addCalendarEditBtn" type="button">edit in settings</button>
+          </div>
+
+          <div class="button-group">
+            <button class="calc-btn" id="calcAddBtn" type="button">calculate</button>
+            <button class="reset-btn" id="resetAddBtn" type="button">clear</button>
+            <button class="copy-btn" id="copyAddBtn" type="button">copy</button>
+          </div>
+
+          <div class="result" id="addResult" role="status" aria-live="polite">—</div>
+        </div>
+
+        <div class="right-panel">
+          <div class="formula-title">live formula</div>
+          <ul class="trace live-formula" id="addTrace" aria-label="Add or subtract: calculation steps">
+            <li class="trace-hint">date ± years, months (clamped to month end) → ± weeks, days = result</li>
+          </ul>
+          <div class="live-result" id="addLiveResult">→ —</div>
+        </div>
       </div>
     </div>
   </div>
 
   <!-- 3. Business Days -->
-  <div class="calc-section" id="card-business">
-    <div class="calc-grid">
-      <div class="left-panel">
+  <div class="calc-section" id="card-business" data-calc="business">
+    <div class="calc-card-header">
+      <button class="drag-handle" type="button" aria-label="Move Business Days" aria-describedby="cardMoveHint" title="Drag to reorder">⠿</button>
+      <div class="calc-card-heading">
         <div class="section-title" id="bizTitle">Business Days</div>
         <div class="section-subtitle">Counts working days between two dates, skipping the weekend and the holidays chosen in settings. The earlier date is always counted.</div>
-
-        <div class="input-row">
-          <label for="bizStart">Start date</label>
-          <div class="date-row">
-            <input class="date-input date-empty" type="date" id="bizStart" min="0001-01-01" max="9999-12-31" placeholder="YYYY-MM-DD">
-            <button class="today-btn" id="bizStartTodayBtn" type="button" data-target="bizStart" aria-label="Set start date to today">today</button>
-          </div>
-        </div>
-        <div class="swap-row">
-          <button class="swap-btn" id="swapBizBtn" type="button" title="Swap start and end dates">⇅ swap dates</button>
-        </div>
-        <div class="input-row">
-          <label for="bizEnd">End date</label>
-          <div class="date-row">
-            <input class="date-input date-empty" type="date" id="bizEnd" min="0001-01-01" max="9999-12-31" placeholder="YYYY-MM-DD">
-            <button class="today-btn" id="bizEndTodayBtn" type="button" data-target="bizEnd" aria-label="Set end date to today">today</button>
-          </div>
-        </div>
-        <label class="check-row" for="bizIncludeEnd">
-          <input class="settings-checkbox" type="checkbox" id="bizIncludeEnd">
-          <span>include the later date</span>
-        </label>
-        <div class="calendar-summary" id="bizCalendarSummary">
-          <span class="calendar-summary-text" id="bizCalendarSummaryText">Sat/Sun · no holidays</span>
-          <button class="link-btn" id="bizCalendarEditBtn" type="button">edit in settings</button>
-        </div>
-
-        <div class="button-group">
-          <button class="calc-btn" id="calcBizBtn" type="button">calculate</button>
-          <button class="reset-btn" id="resetBizBtn" type="button">clear</button>
-          <button class="copy-btn" id="copyBizBtn" type="button">copy</button>
-        </div>
-
-        <div class="result" id="bizResult" role="status" aria-live="polite">—</div>
       </div>
+      <button class="collapse-btn" type="button" aria-expanded="true" aria-controls="card-business-body" aria-label="Collapse Business Days">[ − ]</button>
+    </div>
+    <div class="calc-card-body" id="card-business-body">
+      <div class="calc-grid">
+        <div class="left-panel">
+          <div class="input-row">
+            <label for="bizStart">Start date</label>
+            <div class="date-row">
+              <input class="date-input date-empty" type="date" id="bizStart" min="0001-01-01" max="9999-12-31" placeholder="YYYY-MM-DD">
+              <button class="today-btn" id="bizStartTodayBtn" type="button" data-target="bizStart" aria-label="Set start date to today">today</button>
+            </div>
+          </div>
+          <div class="swap-row">
+            <button class="swap-btn" id="swapBizBtn" type="button" title="Swap start and end dates">⇅ swap dates</button>
+          </div>
+          <div class="input-row">
+            <label for="bizEnd">End date</label>
+            <div class="date-row">
+              <input class="date-input date-empty" type="date" id="bizEnd" min="0001-01-01" max="9999-12-31" placeholder="YYYY-MM-DD">
+              <button class="today-btn" id="bizEndTodayBtn" type="button" data-target="bizEnd" aria-label="Set end date to today">today</button>
+            </div>
+          </div>
+          <label class="check-row" for="bizIncludeEnd">
+            <input class="settings-checkbox" type="checkbox" id="bizIncludeEnd">
+            <span>include the later date</span>
+          </label>
+          <div class="calendar-summary" id="bizCalendarSummary">
+            <span class="calendar-summary-text" id="bizCalendarSummaryText">Sat/Sun · no holidays</span>
+            <button class="link-btn" id="bizCalendarEditBtn" type="button">edit in settings</button>
+          </div>
 
-      <div class="right-panel">
-        <div class="formula-title">live formula</div>
-        <ul class="trace live-formula" id="bizTrace" aria-label="Business days: calculation steps">
-          <li class="trace-hint">calendar days − weekend days − holidays = business days</li>
-        </ul>
-        <div class="live-result" id="bizLiveResult">→ —</div>
+          <div class="button-group">
+            <button class="calc-btn" id="calcBizBtn" type="button">calculate</button>
+            <button class="reset-btn" id="resetBizBtn" type="button">clear</button>
+            <button class="copy-btn" id="copyBizBtn" type="button">copy</button>
+          </div>
 
-        <div class="mini-cal" id="bizCal">
-          <fieldset class="cal-pick" id="bizCalPick">
-            <legend class="cal-pick-legend">Calendar click sets</legend>
-            <label class="cal-pick-opt" for="bizPickStart"><input type="radio" name="bizPick" id="bizPickStart" value="start" checked><span>start</span></label>
-            <label class="cal-pick-opt" for="bizPickEnd"><input type="radio" name="bizPick" id="bizPickEnd" value="end"><span>end</span></label>
-          </fieldset>
-          <div class="cal-pick-hint" id="bizCalHint" role="status" aria-live="polite">Next click sets the start date.</div>
-          <div class="mini-cal-head">
-            <button class="mini-cal-nav" id="bizCalPrevBtn" type="button" aria-label="Previous month" aria-controls="bizCalGrid">‹</button>
-            <div class="mini-cal-title" id="bizCalTitle" aria-live="polite">—</div>
-            <button class="mini-cal-nav" id="bizCalNextBtn" type="button" aria-label="Next month" aria-controls="bizCalGrid">›</button>
-            <button class="mini-cal-nav mini-cal-today" id="bizCalTodayBtn" type="button" aria-label="today, show the current month" aria-controls="bizCalGrid">today</button>
-          </div>
-          <div class="mini-cal-weekdays" id="bizCalWeekdays" aria-hidden="true">
-            <span class="mini-cal-dow">Mon</span><span class="mini-cal-dow">Tue</span><span class="mini-cal-dow">Wed</span><span class="mini-cal-dow">Thu</span><span class="mini-cal-dow">Fri</span><span class="mini-cal-dow weekend">Sat</span><span class="mini-cal-dow weekend">Sun</span>
-          </div>
-          <div class="mini-cal-grid" id="bizCalGrid" role="group" aria-labelledby="bizCalTitle"></div>
-          <div class="mini-cal-legend" aria-hidden="true">
-            <span class="legend-item"><span class="legend-swatch swatch-endpoint"></span>start / end</span>
-            <span class="legend-item"><span class="legend-swatch swatch-range"></span>in range</span>
-            <span class="legend-item"><span class="legend-swatch swatch-weekend"></span>weekend</span>
-            <span class="legend-item"><span class="legend-swatch swatch-holiday"></span>holiday</span>
-            <span class="legend-item"><span class="legend-mark">~</span>estimated</span>
-            <span class="legend-item"><span class="legend-swatch swatch-today"></span>today</span>
-          </div>
+          <div class="result" id="bizResult" role="status" aria-live="polite">—</div>
         </div>
 
-        <div class="holiday-hits hidden" id="bizHolidayHits">
-          <div class="holiday-hits-title">holidays in range</div>
-          <ul class="holiday-hit-list" id="bizHolidayList" aria-label="Holidays in range"></ul>
-          <div class="holiday-hit-more hidden" id="bizHolidayMore"></div>
+        <div class="right-panel">
+          <div class="formula-title">live formula</div>
+          <ul class="trace live-formula" id="bizTrace" aria-label="Business days: calculation steps">
+            <li class="trace-hint">calendar days − weekend days − holidays = business days</li>
+          </ul>
+          <div class="live-result" id="bizLiveResult">→ —</div>
+
+          <div class="mini-cal" id="bizCal">
+            <fieldset class="cal-pick" id="bizCalPick">
+              <legend class="cal-pick-legend">Calendar click sets</legend>
+              <label class="cal-pick-opt" for="bizPickStart"><input type="radio" name="bizPick" id="bizPickStart" value="start" checked><span>start</span></label>
+              <label class="cal-pick-opt" for="bizPickEnd"><input type="radio" name="bizPick" id="bizPickEnd" value="end"><span>end</span></label>
+            </fieldset>
+            <div class="cal-pick-hint" id="bizCalHint" role="status" aria-live="polite">Next click sets the start date.</div>
+            <div class="mini-cal-head">
+              <button class="mini-cal-nav" id="bizCalPrevBtn" type="button" aria-label="Previous month" aria-controls="bizCalGrid">‹</button>
+              <div class="mini-cal-title" id="bizCalTitle" aria-live="polite">—</div>
+              <button class="mini-cal-nav" id="bizCalNextBtn" type="button" aria-label="Next month" aria-controls="bizCalGrid">›</button>
+              <button class="mini-cal-nav mini-cal-today" id="bizCalTodayBtn" type="button" aria-label="today, show the current month" aria-controls="bizCalGrid">today</button>
+            </div>
+            <div class="mini-cal-weekdays" id="bizCalWeekdays" aria-hidden="true">
+              <span class="mini-cal-dow">Mon</span><span class="mini-cal-dow">Tue</span><span class="mini-cal-dow">Wed</span><span class="mini-cal-dow">Thu</span><span class="mini-cal-dow">Fri</span><span class="mini-cal-dow weekend">Sat</span><span class="mini-cal-dow weekend">Sun</span>
+            </div>
+            <div class="mini-cal-grid" id="bizCalGrid" role="group" aria-labelledby="bizCalTitle"></div>
+            <div class="mini-cal-legend" aria-hidden="true">
+              <span class="legend-item"><span class="legend-swatch swatch-endpoint"></span>start / end</span>
+              <span class="legend-item"><span class="legend-swatch swatch-range"></span>in range</span>
+              <span class="legend-item"><span class="legend-swatch swatch-weekend"></span>weekend</span>
+              <span class="legend-item"><span class="legend-swatch swatch-holiday"></span>holiday</span>
+              <span class="legend-item"><span class="legend-mark">~</span>estimated</span>
+              <span class="legend-item"><span class="legend-swatch swatch-today"></span>today</span>
+            </div>
+          </div>
+
+          <div class="holiday-hits hidden" id="bizHolidayHits">
+            <div class="holiday-hits-title">holidays in range</div>
+            <ul class="holiday-hit-list" id="bizHolidayList" aria-label="Holidays in range"></ul>
+            <div class="holiday-hit-more hidden" id="bizHolidayMore"></div>
+          </div>
         </div>
       </div>
     </div>
   </div>
 
   <!-- 4. Age -->
-  <div class="calc-section" id="card-age">
-    <div class="calc-grid">
-      <div class="left-panel">
+  <div class="calc-section" id="card-age" data-calc="age">
+    <div class="calc-card-header">
+      <button class="drag-handle" type="button" aria-label="Move Age" aria-describedby="cardMoveHint" title="Drag to reorder">⠿</button>
+      <div class="calc-card-heading">
         <div class="section-title" id="ageTitle">Age</div>
         <div class="section-subtitle">Exact age in years, months and days, with totals and the next birthday.</div>
-
-        <div class="input-row">
-          <label for="ageBirth">Birth date</label>
-          <input class="date-input date-empty" type="date" id="ageBirth" min="0001-01-01" max="9999-12-31" placeholder="YYYY-MM-DD">
-        </div>
-        <div class="input-row">
-          <label for="ageAsOf">As of (empty = today)</label>
-          <div class="date-row">
-            <input class="date-input date-empty" type="date" id="ageAsOf" min="0001-01-01" max="9999-12-31" placeholder="YYYY-MM-DD" aria-describedby="ageAsOfHint">
-            <button class="today-btn" id="ageAsOfTodayBtn" type="button" data-target="ageAsOf" aria-label="Set as-of date to today">today</button>
-          </div>
-          <div class="field-hint" id="ageAsOfHint">empty = today</div>
-        </div>
-        <div class="toggle-row">
-          <span class="toggle-row-label" id="ageLeapLabel">Feb 29 birthdays in common years</span>
-          <div class="mode-toggle" role="group" aria-labelledby="ageLeapLabel">
-            <button class="mode-btn active" id="ageLeapFeb28Btn" data-rule="feb28" type="button" aria-pressed="true">Feb 28</button>
-            <button class="mode-btn" id="ageLeapMar1Btn" data-rule="mar1" type="button" aria-pressed="false">Mar 1</button>
-          </div>
-        </div>
-
-        <div class="button-group">
-          <button class="calc-btn" id="calcAgeBtn" type="button">calculate</button>
-          <button class="reset-btn" id="resetAgeBtn" type="button">clear</button>
-          <button class="copy-btn" id="copyAgeBtn" type="button">copy</button>
-        </div>
-
-        <div class="result" id="ageResult" role="status" aria-live="polite">—</div>
       </div>
+      <button class="collapse-btn" type="button" aria-expanded="true" aria-controls="card-age-body" aria-label="Collapse Age">[ − ]</button>
+    </div>
+    <div class="calc-card-body" id="card-age-body">
+      <div class="calc-grid">
+        <div class="left-panel">
+          <div class="input-row">
+            <label for="ageBirth">Birth date</label>
+            <input class="date-input date-empty" type="date" id="ageBirth" min="0001-01-01" max="9999-12-31" placeholder="YYYY-MM-DD">
+          </div>
+          <div class="input-row">
+            <label for="ageAsOf">As of (empty = today)</label>
+            <div class="date-row">
+              <input class="date-input date-empty" type="date" id="ageAsOf" min="0001-01-01" max="9999-12-31" placeholder="YYYY-MM-DD" aria-describedby="ageAsOfHint">
+              <button class="today-btn" id="ageAsOfTodayBtn" type="button" data-target="ageAsOf" aria-label="Set as-of date to today">today</button>
+            </div>
+            <div class="field-hint" id="ageAsOfHint">empty = today</div>
+          </div>
+          <div class="toggle-row">
+            <span class="toggle-row-label" id="ageLeapLabel">Feb 29 birthdays in common years</span>
+            <div class="mode-toggle" role="group" aria-labelledby="ageLeapLabel">
+              <button class="mode-btn active" id="ageLeapFeb28Btn" data-rule="feb28" type="button" aria-pressed="true">Feb 28</button>
+              <button class="mode-btn" id="ageLeapMar1Btn" data-rule="mar1" type="button" aria-pressed="false">Mar 1</button>
+            </div>
+          </div>
 
-      <div class="right-panel">
-        <div class="formula-title">live formula</div>
-        <ul class="trace live-formula" id="ageTrace" aria-label="Age: calculation steps">
-          <li class="trace-hint">birth + years → + months → + days = as of</li>
-        </ul>
-        <div class="live-result" id="ageLiveResult">→ —</div>
+          <div class="button-group">
+            <button class="calc-btn" id="calcAgeBtn" type="button">calculate</button>
+            <button class="reset-btn" id="resetAgeBtn" type="button">clear</button>
+            <button class="copy-btn" id="copyAgeBtn" type="button">copy</button>
+          </div>
+
+          <div class="result" id="ageResult" role="status" aria-live="polite">—</div>
+        </div>
+
+        <div class="right-panel">
+          <div class="formula-title">live formula</div>
+          <ul class="trace live-formula" id="ageTrace" aria-label="Age: calculation steps">
+            <li class="trace-hint">birth + years → + months → + days = as of</li>
+          </ul>
+          <div class="live-result" id="ageLiveResult">→ —</div>
+        </div>
       </div>
     </div>
   </div>
 
   <!-- 5. Date Info -->
-  <div class="calc-section" id="card-info">
-    <div class="calc-grid">
-      <div class="left-panel">
+  <div class="calc-section" id="card-info" data-calc="info">
+    <div class="calc-card-header">
+      <button class="drag-handle" type="button" aria-label="Move Date Info" aria-describedby="cardMoveHint" title="Drag to reorder">⠿</button>
+      <div class="calc-card-heading">
         <div class="section-title" id="infoTitle">Date Info</div>
         <div class="section-subtitle">Weekday, ISO week, day of the year, quarter, leap year and days left for any date.</div>
-
-        <div class="input-row">
-          <label for="infoDate">Date</label>
-          <div class="date-row">
-            <input class="date-input date-empty" type="date" id="infoDate" min="0001-01-01" max="9999-12-31" placeholder="YYYY-MM-DD">
-            <button class="today-btn" id="infoDateTodayBtn" type="button" data-target="infoDate" aria-label="Set date to today">today</button>
-          </div>
-        </div>
-
-        <div class="button-group">
-          <button class="calc-btn" id="calcInfoBtn" type="button">calculate</button>
-          <button class="reset-btn" id="resetInfoBtn" type="button">clear</button>
-          <button class="copy-btn" id="copyInfoBtn" type="button">copy</button>
-        </div>
-
-        <div class="result" id="infoResult" role="status" aria-live="polite">—</div>
       </div>
-
-      <div class="right-panel">
-        <div class="formula-title">live formula</div>
-        <ul class="trace live-formula" id="infoTrace" aria-label="Date info: calculation steps">
-          <li class="trace-hint">weekday · ISO week · day of year · quarter · days left</li>
-        </ul>
-        <div class="live-result" id="infoLiveResult">→ —</div>
-
-        <div class="mini-cal" id="infoCal">
-          <div class="mini-cal-head">
-            <button class="mini-cal-nav" id="infoCalPrevBtn" type="button" aria-label="Previous month" aria-controls="infoCalGrid">‹</button>
-            <div class="mini-cal-title" id="infoCalTitle" aria-live="polite">—</div>
-            <button class="mini-cal-nav" id="infoCalNextBtn" type="button" aria-label="Next month" aria-controls="infoCalGrid">›</button>
-            <button class="mini-cal-nav mini-cal-today" id="infoCalTodayBtn" type="button" aria-label="today, show the current month" aria-controls="infoCalGrid">today</button>
+      <button class="collapse-btn" type="button" aria-expanded="true" aria-controls="card-info-body" aria-label="Collapse Date Info">[ − ]</button>
+    </div>
+    <div class="calc-card-body" id="card-info-body">
+      <div class="calc-grid">
+        <div class="left-panel">
+          <div class="input-row">
+            <label for="infoDate">Date</label>
+            <div class="date-row">
+              <input class="date-input date-empty" type="date" id="infoDate" min="0001-01-01" max="9999-12-31" placeholder="YYYY-MM-DD">
+              <button class="today-btn" id="infoDateTodayBtn" type="button" data-target="infoDate" aria-label="Set date to today">today</button>
+            </div>
           </div>
-          <div class="mini-cal-weekdays" id="infoCalWeekdays" aria-hidden="true">
-            <span class="mini-cal-dow">Mon</span><span class="mini-cal-dow">Tue</span><span class="mini-cal-dow">Wed</span><span class="mini-cal-dow">Thu</span><span class="mini-cal-dow">Fri</span><span class="mini-cal-dow weekend">Sat</span><span class="mini-cal-dow weekend">Sun</span>
+
+          <div class="button-group">
+            <button class="calc-btn" id="calcInfoBtn" type="button">calculate</button>
+            <button class="reset-btn" id="resetInfoBtn" type="button">clear</button>
+            <button class="copy-btn" id="copyInfoBtn" type="button">copy</button>
           </div>
-          <div class="mini-cal-grid" id="infoCalGrid" role="group" aria-labelledby="infoCalTitle"></div>
-          <div class="mini-cal-legend" aria-hidden="true">
-            <span class="legend-item"><span class="legend-swatch swatch-endpoint"></span>selected</span>
-            <span class="legend-item"><span class="legend-swatch swatch-weekend"></span>weekend</span>
-            <span class="legend-item"><span class="legend-swatch swatch-holiday"></span>holiday</span>
-            <span class="legend-item"><span class="legend-mark">~</span>estimated</span>
-            <span class="legend-item"><span class="legend-swatch swatch-today"></span>today</span>
+
+          <div class="result" id="infoResult" role="status" aria-live="polite">—</div>
+        </div>
+
+        <div class="right-panel">
+          <div class="formula-title">live formula</div>
+          <ul class="trace live-formula" id="infoTrace" aria-label="Date info: calculation steps">
+            <li class="trace-hint">weekday · ISO week · day of year · quarter · days left</li>
+          </ul>
+          <div class="live-result" id="infoLiveResult">→ —</div>
+
+          <div class="mini-cal" id="infoCal">
+            <div class="mini-cal-head">
+              <button class="mini-cal-nav" id="infoCalPrevBtn" type="button" aria-label="Previous month" aria-controls="infoCalGrid">‹</button>
+              <div class="mini-cal-title" id="infoCalTitle" aria-live="polite">—</div>
+              <button class="mini-cal-nav" id="infoCalNextBtn" type="button" aria-label="Next month" aria-controls="infoCalGrid">›</button>
+              <button class="mini-cal-nav mini-cal-today" id="infoCalTodayBtn" type="button" aria-label="today, show the current month" aria-controls="infoCalGrid">today</button>
+            </div>
+            <div class="mini-cal-weekdays" id="infoCalWeekdays" aria-hidden="true">
+              <span class="mini-cal-dow">Mon</span><span class="mini-cal-dow">Tue</span><span class="mini-cal-dow">Wed</span><span class="mini-cal-dow">Thu</span><span class="mini-cal-dow">Fri</span><span class="mini-cal-dow weekend">Sat</span><span class="mini-cal-dow weekend">Sun</span>
+            </div>
+            <div class="mini-cal-grid" id="infoCalGrid" role="group" aria-labelledby="infoCalTitle"></div>
+            <div class="mini-cal-legend" aria-hidden="true">
+              <span class="legend-item"><span class="legend-swatch swatch-endpoint"></span>selected</span>
+              <span class="legend-item"><span class="legend-swatch swatch-weekend"></span>weekend</span>
+              <span class="legend-item"><span class="legend-swatch swatch-holiday"></span>holiday</span>
+              <span class="legend-item"><span class="legend-mark">~</span>estimated</span>
+              <span class="legend-item"><span class="legend-swatch swatch-today"></span>today</span>
+            </div>
           </div>
         </div>
       </div>
@@ -347,73 +387,81 @@
   </div>
 
   <!-- 6. Countdown -->
-  <div class="calc-section" id="card-countdown">
-    <div class="calc-grid">
-      <div class="left-panel">
+  <div class="calc-section" id="card-countdown" data-calc="countdown">
+    <div class="calc-card-header">
+      <button class="drag-handle" type="button" aria-label="Move Countdown" aria-describedby="cardMoveHint" title="Drag to reorder">⠿</button>
+      <div class="calc-card-heading">
         <div class="section-title" id="cdTitle">Countdown</div>
         <div class="section-subtitle">Live time left until a date (and optional time) on this device's clock, or time elapsed since it.</div>
-
-        <div class="input-row">
-          <label for="cdTarget">Target date</label>
-          <div class="date-row">
-            <input class="date-input date-empty" type="date" id="cdTarget" min="0001-01-01" max="9999-12-31" placeholder="YYYY-MM-DD">
-            <button class="today-btn" id="cdTargetTodayBtn" type="button" data-target="cdTarget" aria-label="Set target date to today">today</button>
-          </div>
-          <div class="quick-pills" role="group" aria-label="Quick targets">
-            <button class="quick-pill" id="cdQuickNewYearBtn" data-quick="newYear" type="button">new year</button>
-            <button class="quick-pill" id="cdQuick30Btn" data-quick="plus30" type="button">+30d</button>
-            <button class="quick-pill" id="cdQuick100Btn" data-quick="plus100" type="button">+100d</button>
-          </div>
-        </div>
-        <div class="input-row">
-          <label for="cdTime">Target time (optional, local)</label>
-          <input class="date-input date-empty" type="time" id="cdTime" step="60" placeholder="HH:MM">
-        </div>
-        <div class="cd-saved-note hidden" id="cdSavedNote">
-          <span class="cd-saved-note-text" id="cdSavedNoteText">Saved on this device. It resumes when you reopen the app.</span>
-          <button class="link-btn" id="cdForgetBtn" type="button" aria-label="Forget the saved countdown">Forget</button>
-        </div>
-
-        <div class="button-group">
-          <button class="calc-btn" id="calcCdBtn" type="button">calculate</button>
-          <button class="reset-btn" id="resetCdBtn" type="button">clear</button>
-          <button class="copy-btn" id="copyCdBtn" type="button">copy</button>
-        </div>
-
-        <div class="result" id="cdResult" role="status" aria-live="polite">—</div>
       </div>
-
-      <div class="right-panel">
-        <div class="formula-title">live formula</div>
-        <div class="cd-phase-row"><span class="cd-phase hidden" id="cdPhase" aria-hidden="true"></span></div>
-        <div class="countdown-big" id="cdClock" role="timer" aria-labelledby="cdTitle">—</div>
-        <div class="countdown-status" id="cdStatus" role="status" aria-live="polite">Pick a target date to start the countdown.</div>
-        <ul class="trace live-formula" id="cdTrace" aria-label="Countdown: calculation steps">
-          <li class="trace-hint">target − now = days, hours, minutes, seconds</li>
-        </ul>
-        <div class="live-result" id="cdLiveResult">→ —</div>
-
-        <div class="mini-cal" id="cdCal">
-          <div class="mini-cal-head">
-            <button class="mini-cal-nav" id="cdCalPrevBtn" type="button" aria-label="Previous month" aria-controls="cdCalGrid">‹</button>
-            <div class="mini-cal-title" id="cdCalTitle" aria-live="polite">—</div>
-            <button class="mini-cal-nav" id="cdCalNextBtn" type="button" aria-label="Next month" aria-controls="cdCalGrid">›</button>
-            <button class="mini-cal-nav mini-cal-today" id="cdCalTodayBtn" type="button" aria-label="today, show the current month" aria-controls="cdCalGrid">today</button>
+      <button class="collapse-btn" type="button" aria-expanded="true" aria-controls="card-countdown-body" aria-label="Collapse Countdown">[ − ]</button>
+    </div>
+    <div class="calc-card-body" id="card-countdown-body">
+      <div class="calc-grid">
+        <div class="left-panel">
+          <div class="input-row">
+            <label for="cdTarget">Target date</label>
+            <div class="date-row">
+              <input class="date-input date-empty" type="date" id="cdTarget" min="0001-01-01" max="9999-12-31" placeholder="YYYY-MM-DD">
+              <button class="today-btn" id="cdTargetTodayBtn" type="button" data-target="cdTarget" aria-label="Set target date to today">today</button>
+            </div>
+            <div class="quick-pills" role="group" aria-label="Quick targets">
+              <button class="quick-pill" id="cdQuickNewYearBtn" data-quick="newYear" type="button">new year</button>
+              <button class="quick-pill" id="cdQuick30Btn" data-quick="plus30" type="button">+30d</button>
+              <button class="quick-pill" id="cdQuick100Btn" data-quick="plus100" type="button">+100d</button>
+            </div>
           </div>
-          <div class="mini-cal-weekdays" id="cdCalWeekdays" aria-hidden="true">
-            <span class="mini-cal-dow">Mon</span><span class="mini-cal-dow">Tue</span><span class="mini-cal-dow">Wed</span><span class="mini-cal-dow">Thu</span><span class="mini-cal-dow">Fri</span><span class="mini-cal-dow weekend">Sat</span><span class="mini-cal-dow weekend">Sun</span>
+          <div class="input-row">
+            <label for="cdTime">Target time (optional, local)</label>
+            <input class="date-input date-empty" type="time" id="cdTime" step="60" placeholder="HH:MM">
           </div>
-          <div class="mini-cal-grid" id="cdCalGrid" role="group" aria-labelledby="cdCalTitle"></div>
-          <div class="mini-cal-legend" aria-hidden="true">
-            <span class="legend-item"><span class="legend-swatch swatch-endpoint"></span>target</span>
-            <span class="legend-item"><span class="legend-swatch swatch-weekend"></span>weekend</span>
-            <span class="legend-item"><span class="legend-swatch swatch-holiday"></span>holiday</span>
-            <span class="legend-item"><span class="legend-mark">~</span>estimated</span>
-            <span class="legend-item"><span class="legend-swatch swatch-today"></span>today</span>
+          <div class="cd-saved-note hidden" id="cdSavedNote">
+            <span class="cd-saved-note-text" id="cdSavedNoteText">Saved on this device. It resumes when you reopen the app.</span>
+            <button class="link-btn" id="cdForgetBtn" type="button" aria-label="Forget the saved countdown">Forget</button>
+          </div>
+
+          <div class="button-group">
+            <button class="calc-btn" id="calcCdBtn" type="button">calculate</button>
+            <button class="reset-btn" id="resetCdBtn" type="button">clear</button>
+            <button class="copy-btn" id="copyCdBtn" type="button">copy</button>
+          </div>
+
+          <div class="result" id="cdResult" role="status" aria-live="polite">—</div>
+        </div>
+
+        <div class="right-panel">
+          <div class="formula-title">live formula</div>
+          <div class="cd-phase-row"><span class="cd-phase hidden" id="cdPhase" aria-hidden="true"></span></div>
+          <div class="countdown-big" id="cdClock" role="timer" aria-labelledby="cdTitle">—</div>
+          <div class="countdown-status" id="cdStatus" role="status" aria-live="polite">Pick a target date to start the countdown.</div>
+          <ul class="trace live-formula" id="cdTrace" aria-label="Countdown: calculation steps">
+            <li class="trace-hint">target − now = days, hours, minutes, seconds</li>
+          </ul>
+          <div class="live-result" id="cdLiveResult">→ —</div>
+
+          <div class="mini-cal" id="cdCal">
+            <div class="mini-cal-head">
+              <button class="mini-cal-nav" id="cdCalPrevBtn" type="button" aria-label="Previous month" aria-controls="cdCalGrid">‹</button>
+              <div class="mini-cal-title" id="cdCalTitle" aria-live="polite">—</div>
+              <button class="mini-cal-nav" id="cdCalNextBtn" type="button" aria-label="Next month" aria-controls="cdCalGrid">›</button>
+              <button class="mini-cal-nav mini-cal-today" id="cdCalTodayBtn" type="button" aria-label="today, show the current month" aria-controls="cdCalGrid">today</button>
+            </div>
+            <div class="mini-cal-weekdays" id="cdCalWeekdays" aria-hidden="true">
+              <span class="mini-cal-dow">Mon</span><span class="mini-cal-dow">Tue</span><span class="mini-cal-dow">Wed</span><span class="mini-cal-dow">Thu</span><span class="mini-cal-dow">Fri</span><span class="mini-cal-dow weekend">Sat</span><span class="mini-cal-dow weekend">Sun</span>
+            </div>
+            <div class="mini-cal-grid" id="cdCalGrid" role="group" aria-labelledby="cdCalTitle"></div>
+            <div class="mini-cal-legend" aria-hidden="true">
+              <span class="legend-item"><span class="legend-swatch swatch-endpoint"></span>target</span>
+              <span class="legend-item"><span class="legend-swatch swatch-weekend"></span>weekend</span>
+              <span class="legend-item"><span class="legend-swatch swatch-holiday"></span>holiday</span>
+              <span class="legend-item"><span class="legend-mark">~</span>estimated</span>
+              <span class="legend-item"><span class="legend-swatch swatch-today"></span>today</span>
+            </div>
           </div>
         </div>
       </div>
     </div>
+  </div>
   </div>
 
   <div class="calc-section history-section" id="historySection">
@@ -460,7 +508,7 @@
     </div>
   </div>
 
-  <footer>Mohamed Sayed · Ahmed Emara · built with Claude (Anthropic) · 2026 · <span id="appVersion">Desktop v1.1.0</span></footer>
+  <footer>Mohamed Sayed · Ahmed Emara · built with Claude (Anthropic) · 2026 · <span id="appVersion">Desktop v1.2.0</span></footer>
 </div>
 
 <div class="modal-backdrop hidden" id="aboutModal" role="dialog" aria-modal="true" aria-labelledby="aboutModalTitle">
@@ -474,7 +522,7 @@
       <div class="about-icon-badge" aria-hidden="true">31</div>
       <div>
         <div class="about-app-name" id="aboutAppName">Date Calculator Tool</div>
-        <div class="about-version-pill" id="aboutVersionPill">Desktop v1.1.0 · Tauri v2 + Rust</div>
+        <div class="about-version-pill" id="aboutVersionPill">Desktop v1.2.0 · Tauri v2 + Rust</div>
       </div>
     </div>
 
@@ -642,6 +690,14 @@
         </select>
       </div>
       <div class="update-status-text" id="calendarStatusText" role="status" aria-live="polite">Sat/Sun · no holidays</div>
+    </div>
+
+    <div class="about-box">
+      <div class="about-box-title">LAYOUT</div>
+      <div class="settings-actions-row">
+        <button class="utility-btn" id="resetLayoutBtn" type="button">Reset card order &amp; expand all</button>
+      </div>
+      <div class="update-status-text" id="layoutStatusText" role="status" aria-live="polite">Card order and collapsed cards are saved on this device.</div>
     </div>
 
     <div class="modal-footer">
