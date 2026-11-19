@@ -303,7 +303,59 @@ History:
 - safety-eval B/C: `layout-collapse-persist`, `layout-pointer-reorder`, `layout-keyboard-reorder`, `layout-nav-follows-order`, `layout-open-expands` (quick-nav and history restore), `layout-reset`, `layout-bad-record-defaults`, `layout-storage-event`.
 - safety-eval D: the command allowlist and mutant proofs (collapse not saved, nav not synced, reset leaving one card collapsed, `.style` set during a drag).
 
-**Version:** app 1.2.0; the date-core engine stays 1.0.0. The old-app sunset release (B13/M11) becomes **Date v1.3.0**.
+**Version:** app 1.2.0; the date-core engine stays 1.0.0. The old-app sunset release (B13/M11) was renumbered to Date v1.3.0, and later to **Date v1.4.0** (see A9).
+
+### A9. Date Calculator v1.3.0: countdown notes and multiple countdowns
+*Added 2026-11-19 at the owner's request.*
+
+**Note box**
+- Every Countdown card gets a **Note** textarea: free text, ≤ 500 characters, `dir="auto"`, with a character counter.
+- It is saved with that countdown (commit on `change`/blur and on `pagehide`; never on each keystroke) and restored on launch.
+- It is shown under the card title, and included in the card's copy text after the result.
+- It is **not** written to history. History keeps the target date and time only, like v1.2.0, so private notes never appear in the history list.
+
+**More than one countdown**
+- **"+ New countdown"** (under the last countdown card) adds an empty Countdown card.
+- Each Countdown card gets a **Duplicate** button, which adds a card with the same date, time and note, and a **Remove** (×) button on every card except the original. Remove asks for confirmation and offers a 5-second Undo.
+- Up to **10** countdowns. At 10, the buttons are disabled with a short explanation.
+- Each extra card works exactly like the original: live clock, phase chip (counting down / restored / finished / finished while closed), its own clickable mini calendar, quick pills, the Today button, and keyboard support.
+- **Colour:** the original keeps gold. Every additional card gets the next accent from a fixed palette: green, sky, violet, coral, teal, rose, lime, amber-light, ice. The accent tints the card's left border, title, phase chip and clock, so copies are obvious at a glance.
+  - Each accent passes WCAG AA (4.5:1 for text) on the card surface. check-mobile and safety-eval check this.
+  - The accent is chosen by the card's slot and stays with that card across reorders and restarts.
+- **Titles:** "Countdown", "Countdown 2", "Countdown 3" and so on. If a note exists, its first line is shown as a subtitle.
+- The extra cards join the card layout: they can be collapsed, reordered by drag, keyboard or the Move menu, appear in the quick-nav, and expand when opened.
+
+**Storage (downgrade-safe by the existing rules)**
+- **countdown store schemaVersion 2:**
+  ```json
+  {"schemaVersion":2,"items":[{"id":"cd1","targetDate":"…","targetTime":"…","note":"…","slot":0,"savedAtMs":0,"finishedSeenAtMs":null}]}
+  ```
+  - At most 10 items with unique ids and slots, and `note` ≤ 500 characters.
+  - v1.3.0 reads a v1 record and upgrades it in memory to one item. It writes v2 only on the next commit.
+  - A v1.2.0 binary sees `schemaVersion` 2 as **newer**, so it ignores the record and never writes it. That is safe by design.
+- **layout store schemaVersion 2:** `cardOrder` may also hold `countdown-<id>` keys for the extra cards (each existing countdown exactly once; unknown or missing ids are repaired, never treated as corrupt). v1.2.0 sees schemaVersion 2 as newer, so it ignores the record and shows the default layout.
+- Desktop: `countdown.json` and `layout.json` caps rise to 16 KiB. Mobile: the same keys with the same validation.
+
+**Tests**
+- Rust:
+  - v1→v2 upgrade, v2 round trip;
+  - rejecting 11 items, duplicate ids or slots, an over-long note, unknown fields;
+  - a newer schema is never written;
+  - the layout v2 dynamic keys and their repair rules.
+- safety-eval B/C, with mutant proofs:
+  - the note is saved and restored;
+  - the note never reaches history;
+  - New, Duplicate, Remove and Undo;
+  - the 10 limit;
+  - accent per slot, stable across reorder and restart;
+  - each extra card ticks and gets the finished-while-closed state;
+  - the layout includes extra cards;
+  - storage events (mobile).
+- In-page smoke: create, duplicate, note, restart (store round trip), remove.
+
+**Version:** app 1.3.0; the engine is unchanged at 1.0.0. The sunset release (B13/M11) becomes **Date v1.4.0**.
+
+**Portable Calculator Tool:** its countdown list (B9) gets the same note field (≤ 500, not in history) and per-countdown accent colours, in a later milestone.
 
 ---
 
@@ -790,7 +842,7 @@ These are the languages most games and apps ship. More (Hindi, Indonesian, Polis
 **iOS:** home-screen storage is assumed isolated **[A]**. Data moves through the B13 export, by file or by paste.
 
 ### B13. Old apps' final releases (an owner yes for each)
-Date v1.3.0 and PCT v2.4.0 get:
+Date v1.4.0 and PCT v2.4.0 get:
 - a session-dismissible notice "Portable Calculator Tool replaces this app". It is not persisted, so the settings schema does not change.
 - **Export my data** in the B10 format, with **both** "Save file" and **"Copy export to clipboard"** (≤ 1 MiB; above that, file only with a warning).
 - a constant allowlisting exactly `https://github.com/CipherVaults/Portable-Calculator-Tool/releases` in `open_release_page`;
@@ -878,7 +930,7 @@ The clipboard export and the paste import are verified on an iOS home-screen ins
 | M9b | **Themes (B5b):** Daylight and Retro (95/98 with an XP nod), `System` option, per-theme graph/calendar tokens | AA contrast check passes for every theme; no wrong-theme flash; screenshots of every tool in all 3 themes at 390 px and desktop | — |
 | M9 | hardening, accessibility audit, docs, release notes | full checks; manual device checklist in the ledger | — |
 | M10 | v1.0.0 via PR dev→main | 5 assets; `sha256sum -c` passes; Pages live | **merge → release** |
-| M11 | Date v1.3.0, PCT v2.4.0 | notice, file+clipboard export verified on iOS, PCT history fix | **each merge and release** |
+| M11 | Date v1.4.0, PCT v2.4.0 | notice, file+clipboard export verified on iOS, PCT history fix | **each merge and release** |
 
 No time estimates are given **[A: the owner may ask for them after M1, once sizes and timings are measured]**. M2c (both old tools working in the new shell) is a natural internal checkpoint. It is not a public release.
 
