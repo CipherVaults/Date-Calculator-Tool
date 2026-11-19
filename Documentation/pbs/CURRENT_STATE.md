@@ -22,6 +22,8 @@
 
 ## 🎯 Current authority
 
+- **Focus (2026-11-19, newest owner direction):** "stop working on them separately, and focus all of our efforts on the Portable Calculator tool". Date Calculator is frozen at v1.2.0 except for maintenance and the later sunset release (v1.3.0).
+
 - **Standing release authority (newest, 2026-11-18):** "don't wait for my approval to release, I already grant it to you if you tested it and it's good".
   - The coordinator may merge `dev` to `main` and release work that passed every check and was verified.
   - Used for PR #5 and Release v1.2.0 (E-17).
