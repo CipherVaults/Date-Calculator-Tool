@@ -29,15 +29,13 @@
 |---|---|---|---|
 | A8 | Collapsible and reorderable cards | collapse, drag/keyboard reorder and reset work on desktop and phone; the layout is saved in its own store; checks green; merge → v1.2.0 Release under the owner's standing release authority | done 2026-11-18 (PR #5 → `c40fd4d`; Release v1.2.0 verified, E-17) |
 
-## v1.3.0 milestone (requested 2026-11-19, [plan](specs/5-%20PORTABLE_CALCULATOR_PLAN.md) A9)
+## Focus change (2026-11-19)
 
-| # | Milestone | Done when | Status |
-|---|---|---|---|
-| A9 | Countdown notes and multiple countdowns | a note per countdown (≤ 500, saved, not in history); New / Duplicate / Remove up to 10 countdowns, each extra card in its own accent colour; v2 stores downgrade-safe; checks green; merge → v1.3.0 Release under the standing authority | in progress |
+The owner decided to stop developing the apps separately and put all effort into the **Portable Calculator Tool**. Date Calculator stays at **v1.2.0** (maintenance only). The requested countdown notes and multiple colour-coded countdowns are built there instead (plan A9 → B9).
 
 **What comes next:**
 - **Part B:** Portable Calculator Tool v1.0.0 in [CipherVaults/Portable-Calculator-Tool](https://github.com/CipherVaults/Portable-Calculator-Tool), created 2026-11-18. M0 and M1 are done; M2a (phone-first shell) is in progress. Its own roadmap tracks M0–M11.
-- **Date v1.4.0 (later):** the sunset release, with a "replaced by Portable Calculator Tool" notice (plan B13).
+- **Date v1.3.0 (later):** the sunset release, with a "replaced by Portable Calculator Tool" notice (plan B13).
 
 ## Backlog (proposed, not authorized)
 

@@ -305,7 +305,10 @@ History:
 
 **Version:** app 1.2.0; the date-core engine stays 1.0.0. The old-app sunset release (B13/M11) was renumbered to Date v1.3.0, and later to **Date v1.4.0** (see A9).
 
-### A9. Date Calculator v1.3.0: countdown notes and multiple countdowns
+### A9. Countdown notes and multiple countdowns (moved to Portable Calculator Tool)
+> **2026-11-19, owner decision:** "don't make it Date Calculator v1.3, focus on adding this to the wholistic Portable Calculator Tool" and "stop working on them separately, and focus all of our efforts on the Portable Calculator tool". **Date Calculator stays at v1.2.0** (maintenance only). The feature below is built in the Portable Calculator Tool's countdown list (B9) instead; the Date-specific storage details no longer apply. The sunset release keeps the number **Date v1.3.0**.
+
+*Original request text, kept for reference:*
 *Added 2026-11-19 at the owner's request.*
 
 **Note box**
@@ -842,7 +845,7 @@ These are the languages most games and apps ship. More (Hindi, Indonesian, Polis
 **iOS:** home-screen storage is assumed isolated **[A]**. Data moves through the B13 export, by file or by paste.
 
 ### B13. Old apps' final releases (an owner yes for each)
-Date v1.4.0 and PCT v2.4.0 get:
+Date v1.3.0 and PCT v2.4.0 get:
 - a session-dismissible notice "Portable Calculator Tool replaces this app". It is not persisted, so the settings schema does not change.
 - **Export my data** in the B10 format, with **both** "Save file" and **"Copy export to clipboard"** (≤ 1 MiB; above that, file only with a warning).
 - a constant allowlisting exactly `https://github.com/CipherVaults/Portable-Calculator-Tool/releases` in `open_release_page`;
@@ -930,7 +933,7 @@ The clipboard export and the paste import are verified on an iOS home-screen ins
 | M9b | **Themes (B5b):** Daylight and Retro (95/98 with an XP nod), `System` option, per-theme graph/calendar tokens | AA contrast check passes for every theme; no wrong-theme flash; screenshots of every tool in all 3 themes at 390 px and desktop | — |
 | M9 | hardening, accessibility audit, docs, release notes | full checks; manual device checklist in the ledger | — |
 | M10 | v1.0.0 via PR dev→main | 5 assets; `sha256sum -c` passes; Pages live | **merge → release** |
-| M11 | Date v1.4.0, PCT v2.4.0 | notice, file+clipboard export verified on iOS, PCT history fix | **each merge and release** |
+| M11 | Date v1.3.0, PCT v2.4.0 | notice, file+clipboard export verified on iOS, PCT history fix | **each merge and release** |
 
 No time estimates are given **[A: the owner may ask for them after M1, once sizes and timings are measured]**. M2c (both old tools working in the new shell) is a natural internal checkpoint. It is not a public release.
 
