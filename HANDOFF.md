@@ -2,6 +2,8 @@
 
 This document gives a new collaborator (human or AI) what they need to build, test, change and release the project on Windows.
 
+> **Handoff, 2026-11-19:** development continues with **Ahmed Emara** (CipherVaults partner) on the **[Portable Calculator Tool](https://github.com/CipherVaults/Portable-Calculator-Tool)**. Start with that repo's `HANDOFF.md`. Since 2026-11-19, this Date Calculator is **frozen at v1.2.0** by the owner's decision: maintenance only. Its only planned change is the later "replaced by Portable Calculator Tool" sunset release (v1.3.0, Portable milestone M11). The owner decisions log is in the Portable repo at `Documentation/handoff/DECISIONS_LOG.md`.
+
 > **Start here:** [AGENTS.md](AGENTS.md) (conventions and permission boundaries), then [CURRENT_STATE.md](Documentation/pbs/CURRENT_STATE.md), [CONTINUATION_STATE.md](Documentation/pbs/CONTINUATION_STATE.md) and [SOURCE_OWNERSHIP_MAP.md](Documentation/pbs/SOURCE_OWNERSHIP_MAP.md).
 > Evidence and security: [EXECUTION_AND_CODING_LEDGER.md](Documentation/pbs/EXECUTION_AND_CODING_LEDGER.md), [SECURITY_HARDENING_DOSSIER.md](Documentation/pbs/SECURITY_HARDENING_DOSSIER.md) and [4- SESSION_SUMMARY.md](Documentation/4-%20SESSION_SUMMARY.md). Design authority: [0- FROZEN_DECISIONS.md](Documentation/specs/0-%20FROZEN_DECISIONS.md), which overrides specs 1–4.
 
